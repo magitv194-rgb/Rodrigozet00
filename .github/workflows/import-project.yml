@@ -1,11 +1,10 @@
-name: Crear APK Subtitulos Live
+name: Probar captura de audio interno
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -15,24 +14,24 @@ jobs:
       - name: Descargar repositorio
         uses: actions/checkout@v4
 
-      - name: Instalar Java
+      - name: Configurar Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Instalar Gradle
+      - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.7"
+          gradle-version: '8.9'
 
-      - name: Crear proyecto Android completo
+      - name: Crear proyecto Android
         shell: bash
         run: |
-          mkdir -p app/src/main/java/com/subtitulos/live
+          mkdir -p app/src/main/java/com/subtituloslive/test
           mkdir -p app/src/main/res/values
 
-          cat > settings.gradle.kts <<'EOF'
+          cat > settings.gradle <<'EOF'
           pluginManagement {
               repositories {
                   google()
@@ -40,994 +39,510 @@ jobs:
                   gradlePluginPortal()
               }
           }
-
           dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
               repositories {
                   google()
                   mavenCentral()
               }
           }
-
-          rootProject.name = "SubtitulosLive"
+          rootProject.name = "SubtitulosLiveTest"
           include(":app")
           EOF
 
-          cat > build.gradle.kts <<'EOF'
+          cat > build.gradle <<'EOF'
           plugins {
-              id("com.android.application") version "8.5.2" apply false
-              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+              id 'com.android.application' version '8.7.3' apply false
           }
           EOF
 
-          cat > gradle.properties <<'EOF'
-          android.useAndroidX=true
-          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
-          org.gradle.parallel=true
-          EOF
-
-          cat > app/build.gradle.kts <<'EOF'
+          cat > app/build.gradle <<'EOF'
           plugins {
-              id("com.android.application")
-              id("org.jetbrains.kotlin.android")
+              id 'com.android.application'
           }
 
           android {
-              namespace = "com.subtitulos.live"
-              compileSdk = 34
+              namespace 'com.subtituloslive.test'
+              compileSdk 35
 
               defaultConfig {
-                  applicationId = "com.subtitulos.live"
-                  minSdk = 29
-                  targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
-              }
-
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-
-              kotlinOptions {
-                  jvmTarget = "17"
+                  applicationId 'com.subtituloslive.test'
+                  minSdk 29
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0'
               }
           }
+          EOF
 
-          dependencies {
-              implementation("com.alphacephei:vosk-android:0.3.47")
-              implementation("net.java.dev.jna:jna:5.13.0@aar")
-              implementation("com.google.mlkit:translate:17.0.3")
-          }
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+                  <item name="android:fontFamily">sans</item>
+                  <item name="android:colorAccent">#FFFFFF</item>
+                  <item name="android:windowLightStatusBar">false</item>
+                  <item name="android:statusBarColor">#000000</item>
+                  <item name="android:navigationBarColor">#000000</item>
+                  <item name="android:windowBackground">#000000</item>
+              </style>
+          </resources>
           EOF
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-              <uses-permission android:name="android.permission.RECORD_AUDIO"/>
-              <uses-permission android:name="android.permission.INTERNET"/>
-              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
-              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
-              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
               <application
-                  android:allowBackup="false"
-                  android:label="Subtítulos Live"
-                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+                  android:theme="@style/AppTheme"
+                  android:label="Subtítulos Live - Prueba"
+                  android:allowBackup="false">
 
                   <activity
                       android:name=".MainActivity"
                       android:exported="true">
-
                       <intent-filter>
-                          <action android:name="android.intent.action.MAIN"/>
-                          <category android:name="android.intent.category.LAUNCHER"/>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
-
                   </activity>
 
                   <service
                       android:name=".CaptureService"
                       android:exported="false"
-                      android:stopWithTask="false"
-                      android:foregroundServiceType="mediaProjection"/>
-
+                      android:foregroundServiceType="mediaProjection" />
               </application>
           </manifest>
           EOF
 
-          cat > app/src/main/java/com/subtitulos/live/MainActivity.kt <<'EOF'
-          package com.subtitulos.live
+          cat > app/src/main/java/com/subtituloslive/test/MainActivity.java <<'EOF'
+          package com.subtituloslive.test;
 
-          import android.Manifest
-          import android.app.Activity
-          import android.content.Intent
-          import android.content.pm.PackageManager
-          import android.media.projection.MediaProjectionManager
-          import android.net.Uri
-          import android.os.Build
-          import android.os.Bundle
-          import android.provider.Settings
-          import android.view.Gravity
-          import android.widget.*
+          import android.app.Activity;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.IntentFilter;
+          import android.media.projection.MediaProjectionManager;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.view.Gravity;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
 
-          class MainActivity : Activity() {
+          public class MainActivity extends Activity {
 
-              private val projectionRequest = 200
-              private val permissionRequest = 201
+              private static final int REQUEST_CAPTURE = 1001;
+              private TextView status;
+              private TextView meter;
+              private Button startButton;
+              private boolean receiverRegistered = false;
 
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
+              private final BroadcastReceiver receiver = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context context, Intent intent) {
+                      if (CaptureService.ACTION_STATUS.equals(intent.getAction())) {
+                          String message = intent.getStringExtra("message");
+                          int level = intent.getIntExtra("level", 0);
 
-                  val title = TextView(this).apply {
-                      text = "SUBTÍTULOS LIVE"
-                      textSize = 27f
-                      gravity = Gravity.CENTER
-                      setPadding(0, 20, 0, 25)
-                  }
+                          if (message != null) {
+                              status.setText(message);
+                          }
 
-                  val description = TextView(this).apply {
-                      text = "Traducción de audio en directo"
-                      textSize = 17f
-                      gravity = Gravity.CENTER
-                  }
-
-                  val languages = TextView(this).apply {
-                      text = "Inglés  →  Español"
-                      textSize = 23f
-                      gravity = Gravity.CENTER
-                      setPadding(0, 30, 0, 30)
-                  }
-
-                  val start = Button(this).apply {
-                      text = "INICIAR SUBTÍTULOS Y VOZ"
-                      textSize = 16f
-                      setOnClickListener {
-                          startCapture()
+                          meter.setText("Nivel de audio interno: " + level + "%");
                       }
                   }
+              };
 
-                  val stop = Button(this).apply {
-                      text = "DETENER"
-                      setOnClickListener {
-                          stopService(
-                              Intent(
-                                  this@MainActivity,
-                                  CaptureService::class.java
-                              )
-                          )
-                      }
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  LinearLayout layout = new LinearLayout(this);
+                  layout.setOrientation(LinearLayout.VERTICAL);
+                  layout.setGravity(Gravity.CENTER);
+                  layout.setPadding(28, 30, 28, 30);
+                  layout.setBackgroundColor(0xFF000000);
+
+                  TextView title = new TextView(this);
+                  title.setText("SUBTÍTULOS LIVE");
+                  title.setTextColor(0xFFFFFFFF);
+                  title.setTextSize(25);
+                  title.setGravity(Gravity.CENTER);
+
+                  TextView description = new TextView(this);
+                  description.setText(
+                      "PRUEBA DE AUDIO INTERNO\n\n" +
+                      "Esta prueba intenta recibir el sonido de otras aplicaciones.\n" +
+                      "El micrófono del celular NO se utiliza."
+                  );
+                  description.setTextColor(0xFFCCCCCC);
+                  description.setTextSize(16);
+                  description.setGravity(Gravity.CENTER);
+
+                  status = new TextView(this);
+                  status.setText("Estado: esperando autorización");
+                  status.setTextColor(0xFFFFFFFF);
+                  status.setTextSize(17);
+                  status.setGravity(Gravity.CENTER);
+
+                  meter = new TextView(this);
+                  meter.setText("Nivel de audio interno: --");
+                  meter.setTextColor(0xFF00FF88);
+                  meter.setTextSize(19);
+                  meter.setGravity(Gravity.CENTER);
+
+                  startButton = new Button(this);
+                  startButton.setText("PROBAR AUDIO INTERNO");
+                  startButton.setOnClickListener(v -> requestCapture());
+
+                  Button stopButton = new Button(this);
+                  stopButton.setText("DETENER PRUEBA");
+                  stopButton.setOnClickListener(v -> {
+                      Intent stop = new Intent(this, CaptureService.class);
+                      stop.setAction(CaptureService.ACTION_STOP);
+                      startService(stop);
+                      status.setText("Prueba detenida");
+                      meter.setText("Nivel de audio interno: --");
+                  });
+
+                  layout.addView(title);
+                  layout.addView(description);
+                  layout.addView(status);
+                  layout.addView(meter);
+                  layout.addView(startButton);
+                  layout.addView(stopButton);
+
+                  setContentView(layout);
+
+                  IntentFilter filter = new IntentFilter(CaptureService.ACTION_STATUS);
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
+                  } else {
+                      registerReceiver(receiver, filter);
                   }
-
-                  val note = TextView(this).apply {
-                      text = "Activa los permisos solicitados y después abre TikTok LIVE."
-                      textSize = 14f
-                      gravity = Gravity.CENTER
-                      setPadding(10, 25, 10, 10)
-                  }
-
-                  val layout = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      gravity = Gravity.CENTER
-                      setPadding(28, 35, 28, 35)
-
-                      addView(title)
-                      addView(description)
-                      addView(languages)
-
-                      addView(
-                          start,
-                          LinearLayout.LayoutParams(
-                              LinearLayout.LayoutParams.MATCH_PARENT,
-                              LinearLayout.LayoutParams.WRAP_CONTENT
-                          )
-                      )
-
-                      addView(
-                          stop,
-                          LinearLayout.LayoutParams(
-                              LinearLayout.LayoutParams.MATCH_PARENT,
-                              LinearLayout.LayoutParams.WRAP_CONTENT
-                          )
-                      )
-
-                      addView(note)
-                  }
-
-                  setContentView(layout)
+                  receiverRegistered = true;
               }
 
-              private fun startCapture() {
+              private void requestCapture() {
+                  MediaProjectionManager manager =
+                      (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
 
-                  if (!Settings.canDrawOverlays(this)) {
-                      val overlayIntent = Intent(
-                          Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                          Uri.parse("package:$packageName")
-                      )
+                  status.setText("Esperando autorización de Android...");
 
-                      startActivity(overlayIntent)
-
-                      Toast.makeText(
-                          this,
-                          "Activa el permiso de mostrar sobre otras aplicaciones y vuelve.",
-                          Toast.LENGTH_LONG
-                      ).show()
-
-                      return
-                  }
-
-                  if (
-                      checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                      != PackageManager.PERMISSION_GRANTED
-                  ) {
-                      val permissions = mutableListOf(
-                          Manifest.permission.RECORD_AUDIO
-                      )
-
-                      if (Build.VERSION.SDK_INT >= 33) {
-                          permissions.add(
-                              Manifest.permission.POST_NOTIFICATIONS
-                          )
-                      }
-
-                      requestPermissions(
-                          permissions.toTypedArray(),
-                          permissionRequest
-                      )
-
-                      return
-                  }
-
-                  requestProjection()
+                  Intent captureIntent = manager.createScreenCaptureIntent();
+                  startActivityForResult(captureIntent, REQUEST_CAPTURE);
               }
 
-              private fun requestProjection() {
-                  val manager =
-                      getSystemService(MediaProjectionManager::class.java)
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
 
-                  startActivityForResult(
-                      manager.createScreenCaptureIntent(),
-                      projectionRequest
-                  )
-              }
+                  if (requestCode == REQUEST_CAPTURE) {
+                      if (resultCode == RESULT_OK && data != null) {
+                          Intent service = new Intent(this, CaptureService.class);
+                          service.putExtra("resultCode", resultCode);
+                          service.putExtra("projectionData", data);
 
-              override fun onRequestPermissionsResult(
-                  requestCode: Int,
-                  permissions: Array<out String>,
-                  grantResults: IntArray
-              ) {
-                  super.onRequestPermissionsResult(
-                      requestCode,
-                      permissions,
-                      grantResults
-                  )
+                          if (Build.VERSION.SDK_INT >= 26) {
+                              startForegroundService(service);
+                          } else {
+                              startService(service);
+                          }
 
-                  if (requestCode == permissionRequest) {
-                      if (
-                          checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                          == PackageManager.PERMISSION_GRANTED
-                      ) {
-                          requestProjection()
+                          status.setText("Autorizado. Iniciando captura...");
                       } else {
-                          Toast.makeText(
-                              this,
-                              "Necesitas permitir el acceso al audio.",
-                              Toast.LENGTH_LONG
-                          ).show()
+                          status.setText("Autorización cancelada");
                       }
                   }
               }
 
-              @Deprecated("MediaProjection authorization callback")
-              override fun onActivityResult(
-                  requestCode: Int,
-                  resultCode: Int,
-                  data: Intent?
-              ) {
-                  super.onActivityResult(requestCode, resultCode, data)
-
-                  if (
-                      requestCode == projectionRequest &&
-                      resultCode == RESULT_OK &&
-                      data != null
-                  ) {
-                      val serviceIntent = Intent(
-                          this,
-                          CaptureService::class.java
-                      ).apply {
-                          putExtra("resultCode", resultCode)
-                          putExtra("projectionData", data)
-                      }
-
-                      if (Build.VERSION.SDK_INT >= 26) {
-                          startForegroundService(serviceIntent)
-                      } else {
-                          startService(serviceIntent)
-                      }
-
-                      moveTaskToBack(true)
+              @Override
+              protected void onDestroy() {
+                  if (receiverRegistered) {
+                      unregisterReceiver(receiver);
                   }
+                  super.onDestroy();
               }
           }
           EOF
 
-          cat > app/src/main/java/com/subtitulos/live/CaptureService.kt <<'EOF'
-          package com.subtitulos.live
+          cat > app/src/main/java/com/subtituloslive/test/CaptureService.java <<'EOF'
+          package com.subtituloslive.test;
 
-          import android.app.Activity
-          import android.app.Notification
-          import android.app.NotificationChannel
-          import android.app.NotificationManager
-          import android.app.Service
-          import android.content.Intent
-          import android.content.pm.ServiceInfo
-          import android.graphics.Color
-          import android.graphics.PixelFormat
-          import android.graphics.drawable.GradientDrawable
-          import android.media.AudioAttributes
-          import android.media.AudioFormat
-          import android.media.AudioRecord
-          import android.media.MediaRecorder
-          import android.media.projection.MediaProjection
-          import android.media.projection.MediaProjectionManager
-          import android.os.Build
-          import android.os.Handler
-          import android.os.IBinder
-          import android.os.Looper
-          import android.speech.tts.TextToSpeech
-          import android.view.Gravity
-          import android.view.MotionEvent
-          import android.view.WindowManager
-          import android.widget.Button
-          import android.widget.LinearLayout
-          import android.widget.TextView
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.media.AudioAttributes;
+          import android.media.AudioFormat;
+          import android.media.AudioRecord;
+          import android.media.projection.MediaProjection;
+          import android.media.projection.MediaProjectionManager;
+          import android.media.AudioPlaybackCaptureConfiguration;
+          import android.os.Build;
+          import android.os.IBinder;
+          import android.os.Process;
 
-          import com.google.android.gms.tasks.Tasks
-          import com.google.mlkit.common.model.DownloadConditions
-          import com.google.mlkit.nl.translate.Translation
-          import com.google.mlkit.nl.translate.Translator
-          import com.google.mlkit.nl.translate.TranslatorOptions
-          import com.google.mlkit.nl.translate.TranslateLanguage
+          public class CaptureService extends Service {
 
-          import org.json.JSONObject
-          import org.vosk.Model
-          import org.vosk.Recognizer
+              public static final String ACTION_STATUS =
+                  "com.subtituloslive.test.CAPTURE_STATUS";
+              public static final String ACTION_STOP = "STOP_CAPTURE";
 
-          import java.io.File
-          import java.net.URL
-          import java.util.Locale
-          import java.util.UUID
-          import java.util.concurrent.Executors
-          import java.util.concurrent.atomic.AtomicBoolean
-          import java.util.zip.ZipInputStream
+              private static final String CHANNEL_ID = "internal_audio_test";
+              private MediaProjection projection;
+              private AudioRecord recorder;
+              private Thread captureThread;
+              private volatile boolean running = false;
 
-          import kotlin.concurrent.thread
-
-          class CaptureService : Service(), TextToSpeech.OnInitListener {
-
-              private val running = AtomicBoolean(false)
-              private val translationQueue = Executors.newSingleThreadExecutor()
-              private val ui = Handler(Looper.getMainLooper())
-
-              private var projection: MediaProjection? = null
-              private var recorder: AudioRecord? = null
-              private var translator: Translator? = null
-              private var tts: TextToSpeech? = null
-              private var ttsReady = false
-
-              private var windowManager: WindowManager? = null
-              private var overlay: LinearLayout? = null
-              private var subtitleView: TextView? = null
-              private var statusView: TextView? = null
-              private var overlayParams: WindowManager.LayoutParams? = null
-
-              private var fontIndex = 2
-
-              private val fontSizes = floatArrayOf(
-                  14f, 18f, 22f, 28f, 34f, 42f
-              )
-
-              override fun onCreate() {
-                  super.onCreate()
-                  tts = TextToSpeech(this, this)
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  createNotificationChannel();
               }
 
-              override fun onBind(intent: Intent?): IBinder? = null
-
-              override fun onInit(status: Int) {
-                  if (status == TextToSpeech.SUCCESS) {
-                      val result = tts?.setLanguage(Locale("es", "ES"))
-
-                      ttsReady =
-                          result != TextToSpeech.LANG_MISSING_DATA &&
-                          result != TextToSpeech.LANG_NOT_SUPPORTED
-
-                      if (!ttsReady) {
-                          showMessage("Instala una voz española en los ajustes de Android.")
-                      }
-                  } else {
-                      showMessage("No se pudo iniciar la voz española.")
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+                      stopCapture();
+                      stopSelf();
+                      return START_NOT_STICKY;
                   }
-              }
 
-              override fun onStartCommand(
-                  intent: Intent?,
-                  flags: Int,
-                  startId: Int
-              ): Int {
+                  startForeground(1, createNotification());
 
                   if (intent == null) {
-                      stopSelf()
-                      return START_NOT_STICKY
+                      sendStatus("No se recibió autorización", 0);
+                      stopSelf();
+                      return START_NOT_STICKY;
                   }
 
-                  createNotificationChannel()
+                  int resultCode = intent.getIntExtra("resultCode", 0);
+                  Intent data;
 
-                  val notification = Notification.Builder(
-                      this,
-                      "subtitulos_live"
-                  )
-                      .setContentTitle("Subtítulos Live")
-                      .setContentText("Traducción inglés a español activa")
-                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                      .setOngoing(true)
-                      .build()
-
-                  if (Build.VERSION.SDK_INT >= 29) {
-                      startForeground(
-                          1,
-                          notification,
-                          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                      )
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      data = intent.getParcelableExtra("projectionData", Intent.class);
                   } else {
-                      startForeground(1, notification)
+                      data = intent.getParcelableExtra("projectionData");
                   }
 
-                  val resultCode = intent.getIntExtra(
-                      "resultCode",
-                      Activity.RESULT_CANCELED
-                  )
-
-                  @Suppress("DEPRECATION")
-                  val projectionData =
-                      intent.getParcelableExtra<Intent>("projectionData")
-
-                  if (resultCode != Activity.RESULT_OK || projectionData == null) {
-                      showMessage("No se autorizó la captura de audio.")
-                      stopSelf()
-                      return START_NOT_STICKY
+                  if (data == null) {
+                      sendStatus("No se recibió el permiso de captura", 0);
+                      stopSelf();
+                      return START_NOT_STICKY;
                   }
 
                   try {
-                      val manager =
-                          getSystemService(MediaProjectionManager::class.java)
+                      MediaProjectionManager manager =
+                          (MediaProjectionManager) getSystemService(
+                              Context.MEDIA_PROJECTION_SERVICE);
 
-                      val newProjection = manager.getMediaProjection(
-                          resultCode,
-                          projectionData
-                      )
+                      projection = manager.getMediaProjection(resultCode, data);
 
-                      projection = newProjection
+                      if (projection == null) {
+                          sendStatus("Android no permitió crear la captura", 0);
+                          stopSelf();
+                          return START_NOT_STICKY;
+                      }
 
-                      newProjection.registerCallback(
-                          object : MediaProjection.Callback() {
-                              override fun onStop() {
-                                  stopSelf()
+                      projection.registerCallback(
+                          new MediaProjection.Callback() {
+                              @Override
+                              public void onStop() {
+                                  stopCapture();
+                                  stopSelf();
                               }
                           },
-                          ui
-                      )
+                          null
+                      );
 
-                      translator = Translation.getClient(
-                          TranslatorOptions.Builder()
-                              .setSourceLanguage(TranslateLanguage.ENGLISH)
-                              .setTargetLanguage(TranslateLanguage.SPANISH)
-                              .build()
-                      )
+                      startAudioCapture();
 
-                      running.set(true)
-
-                      showOverlay()
-
-                      thread(name = "subtitulos-audio") {
-                          recognizeAudio(newProjection)
-                      }
-
-                  } catch (e: Exception) {
-                      showMessage("No se pudo iniciar: ${e.message}")
-                      stopSelf()
+                  } catch (SecurityException | IllegalStateException e) {
+                      sendStatus("Captura bloqueada: " + e.getMessage(), 0);
+                      stopSelf();
                   }
 
-                  return START_NOT_STICKY
+                  return START_NOT_STICKY;
               }
 
-              private fun createNotificationChannel() {
+              private void startAudioCapture() {
+                  int sampleRate = 16000;
+                  int bufferSize = AudioRecord.getMinBufferSize(
+                      sampleRate,
+                      AudioFormat.CHANNEL_IN_MONO,
+                      AudioFormat.ENCODING_PCM_16BIT
+                  );
+
+                  if (bufferSize <= 0) {
+                      sendStatus("No se pudo preparar el formato de audio", 0);
+                      stopSelf();
+                      return;
+                  }
+
+                  AudioPlaybackCaptureConfiguration config =
+                      new AudioPlaybackCaptureConfiguration.Builder(projection)
+                          .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                          .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                          .build();
+
+                  AudioFormat format = new AudioFormat.Builder()
+                      .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                      .setSampleRate(sampleRate)
+                      .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                      .build();
+
+                  recorder = new AudioRecord.Builder()
+                      .setAudioFormat(format)
+                      .setBufferSizeInBytes(bufferSize * 2)
+                      .setAudioPlaybackCaptureConfig(config)
+                      .build();
+
+                  if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+                      sendStatus("No se pudo iniciar AudioRecord", 0);
+                      stopSelf();
+                      return;
+                  }
+
+                  recorder.startRecording();
+                  running = true;
+
+                  sendStatus("Captura interna iniciada. Reproduce un LIVE.", 0);
+
+                  captureThread = new Thread(() -> {
+                      Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
+
+                      short[] samples = new short[bufferSize / 2];
+
+                      while (running && recorder != null) {
+                          int count = recorder.read(
+                              samples, 0, samples.length,
+                              AudioRecord.READ_BLOCKING
+                          );
+
+                          if (count > 0) {
+                              double sum = 0;
+
+                              for (int i = 0; i < count; i++) {
+                                  double value = samples[i] / 32768.0;
+                                  sum += value * value;
+                              }
+
+                              double rms = Math.sqrt(sum / count);
+                              int level = (int) Math.min(100, rms * 400);
+
+                              sendStatus(
+                                  level > 0
+                                      ? "Captura activa: se reciben muestras de audio"
+                                      : "Captura activa: esperando sonido",
+                                  level
+                              );
+                          } else if (count < 0) {
+                              sendStatus("Error leyendo audio: " + count, 0);
+                              break;
+                          }
+                      }
+                  }, "InternalAudioCapture");
+
+                  captureThread.start();
+              }
+
+              private void sendStatus(String message, int level) {
+                  Intent update = new Intent(ACTION_STATUS);
+                  update.setPackage(getPackageName());
+                  update.putExtra("message", message);
+                  update.putExtra("level", level);
+                  sendBroadcast(update);
+              }
+
+              private Notification createNotification() {
+                  Intent openApp = new Intent(this, MainActivity.class);
+
+                  PendingIntent pendingIntent = PendingIntent.getActivity(
+                      this,
+                      0,
+                      openApp,
+                      PendingIntent.FLAG_IMMUTABLE
+                  );
+
+                  Notification.Builder builder;
+
                   if (Build.VERSION.SDK_INT >= 26) {
-                      val channel = NotificationChannel(
-                          "subtitulos_live",
-                          "Subtítulos Live",
+                      builder = new Notification.Builder(this, CHANNEL_ID);
+                  } else {
+                      builder = new Notification.Builder(this);
+                  }
+
+                  return builder
+                      .setContentTitle("Subtítulos Live")
+                      .setContentText("Prueba de captura de audio interno")
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setContentIntent(pendingIntent)
+                      .setOngoing(true)
+                      .build();
+              }
+
+              private void createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      NotificationChannel channel = new NotificationChannel(
+                          CHANNEL_ID,
+                          "Captura de audio interno",
                           NotificationManager.IMPORTANCE_LOW
-                      )
+                      );
 
-                      getSystemService(NotificationManager::class.java)
-                          .createNotificationChannel(channel)
+                      NotificationManager manager =
+                          getSystemService(NotificationManager.class);
+
+                      manager.createNotificationChannel(channel);
                   }
               }
 
-              private fun recognizeAudio(mediaProjection: MediaProjection) {
+              private void stopCapture() {
+                  running = false;
 
-                  var model: Model? = null
-                  var recognizer: Recognizer? = null
-                  var localRecorder: AudioRecord? = null
-
-                  try {
-                      showMessage("Preparando reconocimiento de voz…")
-
-                      model = loadEnglishModel()
-
-                      if (!running.get()) return
-
-                      recognizer = Recognizer(model, 16000.0f)
-
-                      showMessage("Descargando traductor…")
-
-                      val activeTranslator = translator
-                          ?: throw IllegalStateException("Traductor no disponible.")
-
-                      Tasks.await(
-                          activeTranslator.downloadModelIfNeeded(
-                              DownloadConditions.Builder().build()
-                          )
-                      )
-
-                      if (!running.get()) return
-
-                      val captureConfig =
-                          android.media.AudioPlaybackCaptureConfiguration.Builder(
-                              mediaProjection
-                          )
-                              .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                              .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                              .build()
-
-                      val format = AudioFormat.Builder()
-                          .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                          .setSampleRate(16000)
-                          .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                          .build()
-
-                      val minBuffer = AudioRecord.getMinBufferSize(
-                          16000,
-                          AudioFormat.CHANNEL_IN_MONO,
-                          AudioFormat.ENCODING_PCM_16BIT
-                      )
-
-                      if (minBuffer <= 0) {
-                          throw IllegalStateException("Formato de audio no compatible.")
-                      }
-
-                      localRecorder = AudioRecord.Builder()
-                          .setAudioPlaybackCaptureConfig(captureConfig)
-                          .setAudioFormat(format)
-                          .setBufferSizeInBytes(maxOf(minBuffer * 2, 8192))
-                          .build()
-
-                      if (
-                          localRecorder.state != AudioRecord.STATE_INITIALIZED
-                      ) {
-                          throw IllegalStateException("No se pudo iniciar el capturador.")
-                      }
-
-                      recorder = localRecorder
-                      localRecorder.startRecording()
-
-                      showMessage("Escuchando audio…")
-
-                      val buffer = ByteArray(4096)
-
-                      while (running.get()) {
-
-                          val count = localRecorder.read(
-                              buffer,
-                              0,
-                              buffer.size
-                          )
-
-                          if (count <= 0) continue
-
-                          if (recognizer.acceptWaveForm(buffer, count)) {
-
-                              val recognized = JSONObject(
-                                  recognizer.result
-                              ).optString("text").trim()
-
-                              if (recognized.isNotBlank()) {
-                                  translateText(recognized)
-                              }
-                          }
-                      }
-
-                  } catch (e: Exception) {
-                      if (running.get()) {
-                          showMessage("Error de audio: ${e.message}")
-                      }
-                  } finally {
+                  if (recorder != null) {
                       try {
-                          localRecorder?.stop()
-                      } catch (_: Exception) {}
-
-                      try {
-                          localRecorder?.release()
-                      } catch (_: Exception) {}
-
-                      recorder = null
-
-                      try {
-                          recognizer?.close()
-                      } catch (_: Exception) {}
-
-                      try {
-                          model?.close()
-                      } catch (_: Exception) {}
-                  }
-              }
-
-              private fun loadEnglishModel(): Model {
-
-                  val modelDirectory = File(filesDir, "vosk-english")
-
-                  if (!File(modelDirectory, "am").isDirectory) {
-
-                      showMessage("Descargando modelo de inglés…")
-
-                      val temporaryDirectory = File(
-                          cacheDir,
-                          "vosk-english-temp"
-                      )
-
-                      temporaryDirectory.deleteRecursively()
-                      temporaryDirectory.mkdirs()
-
-                      val zipFile = File(cacheDir, "vosk-english.zip")
-
-                      val connection = URL(
-                          "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
-                      ).openConnection()
-
-                      connection.connectTimeout = 30000
-                      connection.readTimeout = 120000
-
-                      connection.getInputStream().use { input ->
-                          zipFile.outputStream().use { output ->
-                              input.copyTo(output)
-                          }
+                          recorder.stop();
+                      } catch (Exception ignored) {
                       }
 
-                      ZipInputStream(zipFile.inputStream()).use { zip ->
-
-                          var entry = zip.nextEntry
-
-                          while (entry != null) {
-
-                              val outputFile = File(
-                                  temporaryDirectory,
-                                  entry.name
-                              )
-
-                              val base = temporaryDirectory.canonicalPath +
-                                  File.separator
-
-                              if (!outputFile.canonicalPath.startsWith(base)) {
-                                  throw SecurityException("Archivo de modelo inválido.")
-                              }
-
-                              if (entry.isDirectory) {
-                                  outputFile.mkdirs()
-                              } else {
-                                  outputFile.parentFile?.mkdirs()
-
-                                  outputFile.outputStream().use { output ->
-                                      zip.copyTo(output)
-                                  }
-                              }
-
-                              zip.closeEntry()
-                              entry = zip.nextEntry
-                          }
-                      }
-
-                      val extractedModel = temporaryDirectory
-                          .walkTopDown()
-                          .firstOrNull {
-                              it.isDirectory && File(it, "am").isDirectory
-                          } ?: throw IllegalStateException(
-                              "No se encontró el modelo de inglés."
-                          )
-
-                      modelDirectory.deleteRecursively()
-
-                      extractedModel.copyRecursively(
-                          modelDirectory,
-                          overwrite = true
-                      )
-
-                      temporaryDirectory.deleteRecursively()
-                      zipFile.delete()
+                      recorder.release();
+                      recorder = null;
                   }
 
-                  return Model(modelDirectory.absolutePath)
-              }
-
-              private fun translateText(originalText: String) {
-
-                  translationQueue.execute {
-
-                      if (!running.get()) return@execute
-
-                      try {
-                          val activeTranslator = translator
-                              ?: return@execute
-
-                          val translated = Tasks.await(
-                              activeTranslator.translate(originalText)
-                          )
-
-                          if (!running.get()) return@execute
-
-                          ui.post {
-                              if (!running.get()) return@post
-
-                              subtitleView?.text = translated
-                              statusView?.text = "Inglés → Español"
-
-                              if (ttsReady) {
-                                  tts?.speak(
-                                      translated,
-                                      TextToSpeech.QUEUE_ADD,
-                                      null,
-                                      UUID.randomUUID().toString()
-                                  )
-                              }
-                          }
-
-                      } catch (e: Exception) {
-                          showMessage("Error de traducción: ${e.message}")
-                      }
+                  if (projection != null) {
+                      projection.stop();
+                      projection = null;
                   }
+
+                  sendStatus("Captura detenida", 0);
               }
 
-              private fun showOverlay() {
-                  ui.post {
-
-                      if (overlay != null) return@post
-
-                      windowManager = getSystemService(WINDOW_SERVICE)
-                          as WindowManager
-
-                      val container = LinearLayout(this).apply {
-                          orientation = LinearLayout.VERTICAL
-                          setPadding(18, 12, 18, 14)
-
-                          background = GradientDrawable().apply {
-                              setColor(Color.argb(225, 15, 15, 15))
-                              cornerRadius = 22f
-                              setStroke(2, Color.WHITE)
-                          }
-                      }
-
-                      val controls = LinearLayout(this).apply {
-                          orientation = LinearLayout.HORIZONTAL
-                          gravity = Gravity.CENTER_VERTICAL
-                      }
-
-                      val status = TextView(this).apply {
-                          text = "Preparando…"
-                          textSize = 12f
-                          setTextColor(Color.LTGRAY)
-                          setPadding(5, 5, 12, 5)
-                      }
-
-                      statusView = status
-
-                      val smaller = Button(this).apply {
-                          text = "A−"
-                          textSize = 12f
-                          setOnClickListener {
-                              fontIndex = (fontIndex - 1).coerceAtLeast(0)
-                              subtitleView?.textSize = fontSizes[fontIndex]
-                          }
-                      }
-
-                      val larger = Button(this).apply {
-                          text = "A+"
-                          textSize = 12f
-                          setOnClickListener {
-                              fontIndex = (fontIndex + 1)
-                                  .coerceAtMost(fontSizes.lastIndex)
-                              subtitleView?.textSize = fontSizes[fontIndex]
-                          }
-                      }
-
-                      val close = Button(this).apply {
-                          text = "X"
-                          textSize = 12f
-                          setOnClickListener {
-                              stopSelf()
-                          }
-                      }
-
-                      controls.addView(status)
-                      controls.addView(smaller)
-                      controls.addView(larger)
-                      controls.addView(close)
-
-                      val subtitle = TextView(this).apply {
-                          text = "Esperando audio de TikTok…"
-                          textSize = fontSizes[fontIndex]
-                          setTextColor(Color.WHITE)
-                          gravity = Gravity.CENTER
-                          setPadding(10, 12, 10, 12)
-                      }
-
-                      subtitleView = subtitle
-
-                      container.addView(controls)
-                      container.addView(subtitle)
-
-                      val params = WindowManager.LayoutParams(
-                          WindowManager.LayoutParams.MATCH_PARENT,
-                          WindowManager.LayoutParams.WRAP_CONTENT,
-                          WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                          WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                              WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                          PixelFormat.TRANSLUCENT
-                      ).apply {
-                          gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                          x = 0
-                          y = 100
-                      }
-
-                      container.setOnTouchListener { _, event ->
-
-                          when (event.action) {
-                              MotionEvent.ACTION_DOWN -> {
-                                  true
-                              }
-
-                              MotionEvent.ACTION_UP -> {
-                                  true
-                              }
-
-                              else -> true
-                          }
-                      }
-
-                      subtitle.setOnTouchListener(object :
-                          android.view.View.OnTouchListener {
-
-                          private var startX = 0
-                          private var startY = 0
-                          private var touchX = 0f
-                          private var touchY = 0f
-
-                          override fun onTouch(
-                              view: android.view.View,
-                              event: MotionEvent
-                          ): Boolean {
-
-                              when (event.action) {
-
-                                  MotionEvent.ACTION_DOWN -> {
-                                      startX = params.x
-                                      startY = params.y
-                                      touchX = event.rawX
-                                      touchY = event.rawY
-                                      return true
-                                  }
-
-                                  MotionEvent.ACTION_MOVE -> {
-                                      params.x = startX +
-                                          (event.rawX - touchX).toInt()
-
-                                      params.y = startY +
-                                          (event.rawY - touchY).toInt()
-
-                                      try {
-                                          windowManager?.updateViewLayout(
-                                              container,
-                                              params
-                                          )
-                                      } catch (_: Exception) {}
-
-                                      return true
-                                  }
-                              }
-
-                              return true
-                          }
-                      })
-
-                      try {
-                          windowManager?.addView(container, params)
-                          overlay = container
-                          overlayParams = params
-                      } catch (e: Exception) {
-                          showMessage("No se pudo mostrar la ventana flotante.")
-                      }
-                  }
+              @Override
+              public void onDestroy() {
+                  stopCapture();
+                  super.onDestroy();
               }
 
-              private fun showMessage(message: String) {
-                  ui.post {
-                      statusView?.text = message
-                      if (subtitleView?.text.isNullOrBlank()) {
-                          subtitleView?.text = message
-                      }
-                  }
-              }
-
-              private fun removeOverlay() {
-                  ui.post {
-                      try {
-                          overlay?.let {
-                              windowManager?.removeView(it)
-                          }
-                      } catch (_: Exception) {}
-
-                      overlay = null
-                      subtitleView = null
-                      statusView = null
-                      overlayParams = null
-                  }
-              }
-
-              override fun onDestroy() {
-                  running.set(false)
-
-                  try {
-                      recorder?.stop()
-                  } catch (_: Exception) {}
-
-                  try {
-                      recorder?.release()
-                  } catch (_: Exception) {}
-
-                  recorder = null
-
-                  try {
-                      projection?.stop()
-                  } catch (_: Exception) {}
-
-                  projection = null
-
-                  try {
-                      translator?.close()
-                  } catch (_: Exception) {}
-
-                  translator = null
-
-                  try {
-                      tts?.stop()
-                      tts?.shutdown()
-                  } catch (_: Exception) {}
-
-                  tts = null
-
-                  translationQueue.shutdownNow()
-
-                  removeOverlay()
-
-                  super.onDestroy()
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return null;
               }
           }
           EOF
 
-      - name: Compilar aplicación
+      - name: Compilar APK
         run: gradle assembleDebug
 
-      - name: Publicar APK
+      - name: Guardar APK
         uses: actions/upload-artifact@v4
         with:
-          name: SubtitulosLive-APK
+          name: SubtitulosLive-Prueba-Audio-Interno
           path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
