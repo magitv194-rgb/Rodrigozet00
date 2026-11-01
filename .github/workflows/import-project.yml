@@ -1,6 +1,6 @@
-: build-apk
-name
-on:
+name: build-apk
+
+"on":
   push:
   workflow_dispatch:
 
