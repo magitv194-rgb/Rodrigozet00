@@ -163,7 +163,9 @@ jobs:
           import android.os.IBinder
           import android.os.Looper
           import android.view.Gravity
+          import android.view.MotionEvent
           import android.view.WindowManager
+          import android.widget.LinearLayout
           import android.widget.TextView
           import com.google.mlkit.common.model.DownloadConditions
           import com.google.mlkit.nl.translate.*
@@ -172,6 +174,7 @@ jobs:
           import org.vosk.Recognizer
           import java.io.File
           import java.net.URL
+          import java.util.concurrent.atomic.AtomicBoolean
           import java.util.zip.ZipInputStream
           import kotlin.concurrent.thread
 
@@ -189,12 +192,15 @@ jobs:
           )
 
           class CaptureService : Service() {
-              private var run = false
+              private var alive: AtomicBoolean? = null
               private var rec: AudioRecord? = null
               private var mp: MediaProjection? = null
+              private var box: LinearLayout? = null
               private var tv: TextView? = null
               private var last = ""
               private var ready = false
+              private var sz = 2
+              private val sizes = floatArrayOf(14f, 18f, 22f, 28f, 36f, 46f)
               private val ui = Handler(Looper.getMainLooper())
 
               override fun onBind(i: Intent?): IBinder? = null
@@ -202,6 +208,9 @@ jobs:
               @Suppress("DEPRECATION")
               override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
                   if (i == null) return START_NOT_STICKY
+                  cleanup()
+                  last = ""
+                  ready = false
                   getSystemService(NotificationManager::class.java)
                       .createNotificationChannel(NotificationChannel("sub", "Subtítulos", NotificationManager.IMPORTANCE_LOW))
                   startForeground(
@@ -217,6 +226,8 @@ jobs:
                   proj.registerCallback(object : MediaProjection.Callback() {}, null)
                   mp = proj
                   overlay()
+                  val live = AtomicBoolean(true)
+                  alive = live
 
                   val tr = if (srcLang == dstLang) null else Translation.getClient(
                       TranslatorOptions.Builder().setSourceLanguage(srcLang).setTargetLanguage(dstLang).build()
@@ -230,10 +241,10 @@ jobs:
                           .addOnFailureListener { say("Error traductor: ${it.message}") }
                   }
 
-                  run = true
                   thread {
                       try {
                           val recog = Recognizer(loadModel(lc, modelName), 16000f)
+                          if (!live.get()) return@thread
                           val cfg = AudioPlaybackCaptureConfiguration.Builder(proj)
                               .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
                               .addMatchingUsage(AudioAttributes.USAGE_GAME)
@@ -243,11 +254,15 @@ jobs:
                                   AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                                       .setSampleRate(16000).setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
                               ).setBufferSizeInBytes(32000).build()
+                          if (!live.get()) {
+                              r.release()
+                              return@thread
+                          }
                           rec = r
                           r.startRecording()
                           say("Escuchando…")
                           val buf = ByteArray(4096)
-                          while (run) {
+                          while (live.get()) {
                               val n = r.read(buf, 0, buf.size)
                               if (n <= 0) continue
                               val fin = recog.acceptWaveForm(buf, n)
@@ -257,6 +272,7 @@ jobs:
                                   last = t
                                   val shown = if (lc == "ja" || lc == "zh") t.replace(" ", "") else t
                                   ui.post {
+                                      if (!live.get()) return@post
                                       if (tr == null) {
                                           tv?.text = shown
                                       } else if (ready) {
@@ -266,57 +282,125 @@ jobs:
                               }
                           }
                       } catch (e: Exception) {
-                          say("Error: ${e.message}")
+                          if (live.get()) say("Error: ${e.message}")
                       }
                   }
                   return START_NOT_STICKY
               }
 
+              private fun download(lc: String, name: String) {
+                  say("Descargando modelo de voz (una sola vez)…")
+                  val dir = File(filesDir, "model-$lc")
+                  val tmp = File(filesDir, "tmp-$lc")
+                  dir.deleteRecursively()
+                  tmp.deleteRecursively()
+                  tmp.mkdirs()
+                  val zip = File(cacheDir, "m-$lc.zip")
+                  URL("https://alphacephei.com/vosk/models/$name.zip").openStream().use { i -> zip.outputStream().use { i.copyTo(it) } }
+                  ZipInputStream(zip.inputStream()).use { z ->
+                      var e = z.nextEntry
+                      while (e != null) {
+                          val f = File(tmp, e.name)
+                          if (!f.canonicalPath.startsWith(tmp.canonicalPath)) throw SecurityException("zip inválido")
+                          if (e.isDirectory) f.mkdirs() else { f.parentFile!!.mkdirs(); f.outputStream().use { z.copyTo(it) } }
+                          e = z.nextEntry
+                      }
+                  }
+                  zip.delete()
+                  val root = tmp.walkTopDown().firstOrNull { File(it, "am").isDirectory }
+                      ?: throw Exception("modelo incompleto")
+                  if (!root.renameTo(dir)) throw Exception("no se pudo guardar el modelo")
+                  tmp.deleteRecursively()
+              }
+
               private fun loadModel(lc: String, name: String): Model {
                   val dir = File(filesDir, "model-$lc")
-                  if (!dir.exists()) {
-                      say("Descargando modelo de voz (una sola vez)…")
-                      val zip = File(cacheDir, "m.zip")
-                      URL("https://alphacephei.com/vosk/models/$name.zip").openStream().use { i -> zip.outputStream().use { i.copyTo(it) } }
-                      ZipInputStream(zip.inputStream()).use { z ->
-                          var e = z.nextEntry
-                          while (e != null) {
-                              val rel = e.name.substringAfter('/')
-                              if (rel.isNotEmpty()) {
-                                  val f = File(dir, rel)
-                                  if (!f.canonicalPath.startsWith(dir.canonicalPath)) throw SecurityException("zip inválido")
-                                  if (e.isDirectory) f.mkdirs() else { f.parentFile!!.mkdirs(); f.outputStream().use { z.copyTo(it) } }
-                              }
-                              e = z.nextEntry
-                          }
-                      }
-                      zip.delete()
+                  if (!File(dir, "am").isDirectory) download(lc, name)
+                  return try {
+                      Model(dir.path)
+                  } catch (e: Exception) {
+                      download(lc, name)
+                      Model(dir.path)
                   }
-                  return Model(dir.path)
               }
 
               private fun overlay() {
+                  val prefs = getSharedPreferences("cfg", MODE_PRIVATE)
+                  sz = prefs.getInt("sz", 2).coerceIn(0, sizes.size - 1)
+                  val dm = resources.displayMetrics
+                  val wm = getSystemService(WindowManager::class.java)
                   val t = TextView(this).apply {
-                      setTextColor(Color.WHITE); textSize = 20f; gravity = Gravity.CENTER
+                      setTextColor(Color.WHITE); textSize = sizes[sz]; gravity = Gravity.CENTER
                       setBackgroundColor(0xAA000000.toInt()); setPadding(24, 16, 24, 16)
                   }
+                  fun btn(label: String, action: () -> Unit) = TextView(this).apply {
+                      text = label; setTextColor(Color.WHITE); textSize = 18f; gravity = Gravity.CENTER
+                      setBackgroundColor(0xCC333333.toInt()); setPadding(40, 14, 40, 14)
+                      setOnClickListener { action() }
+                  }
+                  val row = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+                      addView(btn("A-") { changeSize(sz - 1) })
+                      addView(btn("A+") { changeSize(sz + 1) })
+                      addView(btn("X") { stopSelf() })
+                  }
+                  val b = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      addView(t)
+                      addView(row)
+                  }
                   val lp = WindowManager.LayoutParams(
-                      WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                      (dm.widthPixels * 0.94f).toInt(), WindowManager.LayoutParams.WRAP_CONTENT,
                       WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                       PixelFormat.TRANSLUCENT
                   )
-                  lp.gravity = Gravity.BOTTOM; lp.y = 250
-                  getSystemService(WindowManager::class.java).addView(t, lp)
+                  lp.gravity = Gravity.TOP or Gravity.START
+                  lp.x = prefs.getInt("x", (dm.widthPixels * 0.03f).toInt())
+                  lp.y = prefs.getInt("y", dm.heightPixels * 2 / 3)
+                  var sx = 0
+                  var sy = 0
+                  var dx = 0f
+                  var dy = 0f
+                  t.setOnTouchListener { _, e ->
+                      when (e.action) {
+                          MotionEvent.ACTION_DOWN -> { dx = e.rawX; dy = e.rawY; sx = lp.x; sy = lp.y }
+                          MotionEvent.ACTION_MOVE -> {
+                              lp.x = sx + (e.rawX - dx).toInt()
+                              lp.y = sy + (e.rawY - dy).toInt()
+                              try { wm.updateViewLayout(b, lp) } catch (ex: Exception) { }
+                          }
+                          MotionEvent.ACTION_UP -> prefs.edit().putInt("x", lp.x).putInt("y", lp.y).apply()
+                      }
+                      true
+                  }
+                  wm.addView(b, lp)
+                  box = b
                   tv = t
+              }
+
+              private fun changeSize(n: Int) {
+                  sz = n.coerceIn(0, sizes.size - 1)
+                  tv?.textSize = sizes[sz]
+                  getSharedPreferences("cfg", MODE_PRIVATE).edit().putInt("sz", sz).apply()
               }
 
               private fun say(s: String) { ui.post { tv?.text = s } }
 
+              private fun cleanup() {
+                  alive?.set(false)
+                  try { rec?.stop() } catch (e: Exception) { }
+                  try { rec?.release() } catch (e: Exception) { }
+                  rec = null
+                  try { mp?.stop() } catch (e: Exception) { }
+                  mp = null
+                  try { box?.let { getSystemService(WindowManager::class.java).removeView(it) } } catch (e: Exception) { }
+                  box = null
+                  tv = null
+              }
+
               override fun onDestroy() {
-                  run = false
-                  rec?.release(); mp?.stop()
-                  tv?.let { getSystemService(WindowManager::class.java).removeView(it) }
+                  cleanup()
                   super.onDestroy()
               }
           }
