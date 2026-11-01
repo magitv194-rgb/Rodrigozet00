@@ -1,37 +1,46 @@
-name: Probar captura de audio interno
-
+: build-apk
+name
 on:
+  push:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  apk:
     runs-on: ubuntu-latest
-
     steps:
       - name: Descargar repositorio
         uses: actions/checkout@v4
 
-      - name: Configurar Java
+      - name: Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar plataforma Android 35
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
 
       - name: Configurar Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Crear proyecto Android
+      - name: Generar proyecto Android reparado
         shell: bash
         run: |
-          mkdir -p app/src/main/java/com/subtituloslive/test
-          mkdir -p app/src/main/res/values
+          set -euo pipefail
 
-          cat > settings.gradle <<'EOF'
+          mkdir -p app/src/main/java/com/subtitulos/live
+
+          cat > settings.gradle.kts <<'EOF'
           pluginManagement {
               repositories {
                   google()
@@ -46,59 +55,76 @@ jobs:
                   mavenCentral()
               }
           }
-          rootProject.name = "SubtitulosLiveTest"
+          rootProject.name = "SubtitulosLive"
           include(":app")
           EOF
 
-          cat > build.gradle <<'EOF'
+          cat > build.gradle.kts <<'EOF'
           plugins {
-              id 'com.android.application' version '8.7.3' apply false
+              id("com.android.application") version "8.7.3" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
           }
           EOF
 
-          cat > app/build.gradle <<'EOF'
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          org.gradle.parallel=true
+          kotlin.code.style=official
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
           plugins {
-              id 'com.android.application'
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
           }
 
           android {
-              namespace 'com.subtituloslive.test'
-              compileSdk 35
+              namespace = "com.subtitulos.live"
+              compileSdk = 35
 
               defaultConfig {
-                  applicationId 'com.subtituloslive.test'
-                  minSdk 29
-                  targetSdk 35
-                  versionCode 1
-                  versionName '1.0'
+                  applicationId = "com.subtitulos.live"
+                  minSdk = 29
+                  targetSdk = 34
+                  versionCode = 3
+                  versionName = "1.2"
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
               }
           }
-          EOF
 
-          cat > app/src/main/res/values/styles.xml <<'EOF'
-          <resources>
-              <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
-                  <item name="android:fontFamily">sans</item>
-                  <item name="android:colorAccent">#FFFFFF</item>
-                  <item name="android:windowLightStatusBar">false</item>
-                  <item name="android:statusBarColor">#000000</item>
-                  <item name="android:navigationBarColor">#000000</item>
-                  <item name="android:windowBackground">#000000</item>
-              </style>
-          </resources>
+          dependencies {
+              implementation("com.alphacephei:vosk-android:0.3.47")
+              implementation("net.java.dev.jna:jna:5.13.0@aar")
+              implementation("com.google.android.gms:play-services-tasks:18.2.0")
+              implementation("com.google.mlkit:translate:17.0.3")
+          }
           EOF
 
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-
+              <!-- Android requiere RECORD_AUDIO para autorizar AudioPlaybackCapture.
+                   La aplicación NO crea una entrada MIC ni lee el micrófono. -->
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
               <application
-                  android:theme="@style/AppTheme"
-                  android:label="Subtítulos Live - Prueba"
-                  android:allowBackup="false">
+                  android:allowBackup="false"
+                  android:label="Subtítulos Live"
+                  android:theme="@android:style/Theme.Material.NoActionBar"
+                  android:usesCleartextTraffic="false">
 
                   <activity
                       android:name=".MainActivity"
@@ -112,437 +138,995 @@ jobs:
                   <service
                       android:name=".CaptureService"
                       android:exported="false"
+                      android:stopWithTask="false"
                       android:foregroundServiceType="mediaProjection" />
               </application>
           </manifest>
           EOF
 
-          cat > app/src/main/java/com/subtituloslive/test/MainActivity.java <<'EOF'
-          package com.subtituloslive.test;
+          cat > app/src/main/java/com/subtitulos/live/MainActivity.kt <<'EOF'
+          package com.subtitulos.live
 
-          import android.app.Activity;
-          import android.content.BroadcastReceiver;
-          import android.content.Context;
-          import android.content.Intent;
-          import android.content.IntentFilter;
-          import android.media.projection.MediaProjectionManager;
-          import android.os.Build;
-          import android.os.Bundle;
-          import android.view.Gravity;
-          import android.widget.Button;
-          import android.widget.LinearLayout;
-          import android.widget.TextView;
+          import android.Manifest
+          import android.app.Activity
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.graphics.Color
+          import android.media.projection.MediaProjectionManager
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.widget.ArrayAdapter
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.SeekBar
+          import android.widget.Spinner
+          import android.widget.Switch
+          import android.widget.TextView
+          import android.widget.Toast
 
-          public class MainActivity extends Activity {
+          class MainActivity : Activity() {
+              private lateinit var sourceSpinner: Spinner
+              private lateinit var targetSpinner: Spinner
+              private lateinit var volumeText: TextView
+              private lateinit var volumeSeek: SeekBar
+              private lateinit var voiceSwitch: Switch
 
-              private static final int REQUEST_CAPTURE = 1001;
-              private TextView status;
-              private TextView meter;
-              private Button startButton;
-              private boolean receiverRegistered = false;
+              private val prefs by lazy { getSharedPreferences("cfg", MODE_PRIVATE) }
+              private val names by lazy { LANGS.keys.toList() }
 
-              private final BroadcastReceiver receiver = new BroadcastReceiver() {
-                  @Override
-                  public void onReceive(Context context, Intent intent) {
-                      if (CaptureService.ACTION_STATUS.equals(intent.getAction())) {
-                          String message = intent.getStringExtra("message");
-                          int level = intent.getIntExtra("level", 0);
+              companion object {
+                  private const val REQUEST_PERMISSIONS = 20
+                  private const val REQUEST_OVERLAY = 21
+                  private const val REQUEST_PROJECTION = 22
+              }
 
-                          if (message != null) {
-                              status.setText(message);
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.statusBarColor = Color.BLACK
+                  window.navigationBarColor = Color.BLACK
+
+                  val content = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER_HORIZONTAL
+                      setPadding(28, 28, 28, 28)
+                      setBackgroundColor(Color.BLACK)
+                  }
+
+                  fun text(value: String, size: Float = 17f): TextView = TextView(this).apply {
+                      text = value
+                      textSize = size
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.CENTER
+                      setPadding(8, 12, 8, 12)
+                  }
+
+                  val title = text("SUBTÍTULOS LIVE", 25f)
+                  val subtitle = text(
+                      "Traducción de audio interno\n" +
+                      "Primera prueba: solo captura de reproducción de otras aplicaciones.\n" +
+                      "No se usa la entrada del micrófono.", 15f
+                  )
+
+                  sourceSpinner = Spinner(this).apply {
+                      adapter = ArrayAdapter(
+                          this@MainActivity,
+                          android.R.layout.simple_spinner_dropdown_item,
+                          names
+                      )
+                      setSelection(names.indexOf(prefs.getString("source", "Inglés") ?: "Inglés").coerceAtLeast(0))
+                  }
+
+                  targetSpinner = Spinner(this).apply {
+                      adapter = ArrayAdapter(
+                          this@MainActivity,
+                          android.R.layout.simple_spinner_dropdown_item,
+                          names
+                      )
+                      setSelection(names.indexOf(prefs.getString("target", "Español") ?: "Español").coerceAtLeast(0))
+                  }
+
+                  voiceSwitch = Switch(this).apply {
+                      text = "Reproducir traducción con voz"
+                      setTextColor(Color.WHITE)
+                      isChecked = prefs.getBoolean("voice_enabled", true)
+                  }
+
+                  volumeText = text("Volumen de voz traducida: ${prefs.getInt("voice_volume", 100)}%", 15f)
+                  volumeSeek = SeekBar(this).apply {
+                      max = 200
+                      progress = prefs.getInt("voice_volume", 100).coerceIn(0, 200)
+                      setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                          override fun onProgressChanged(bar: SeekBar?, value: Int, fromUser: Boolean) {
+                              volumeText.text = "Volumen de voz traducida: ${value}%"
+                              prefs.edit().putInt("voice_volume", value).apply()
                           }
+                          override fun onStartTrackingTouch(bar: SeekBar?) {}
+                          override fun onStopTrackingTouch(bar: SeekBar?) {}
+                      })
+                  }
 
-                          meter.setText("Nivel de audio interno: " + level + "%");
+                  val volumeNote = text(
+                      "El control amplifica únicamente la voz sintetizada por esta app. " +
+                      "No modifica el volumen general del teléfono.", 13f
+                  )
+
+                  val startButton = Button(this).apply {
+                      text = "INICIAR CAPTURA DE AUDIO INTERNO"
+                      setOnClickListener { startCapture() }
+                  }
+
+                  val stopButton = Button(this).apply {
+                      text = "DETENER SUBTÍTULOS"
+                      setOnClickListener {
+                          stopService(Intent(this@MainActivity, CaptureService::class.java))
+                          Toast.makeText(this@MainActivity, "Captura detenida", Toast.LENGTH_SHORT).show()
                       }
                   }
-              };
 
-              @Override
-              protected void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
+                  content.addView(title)
+                  content.addView(subtitle)
+                  content.addView(text("Idioma que se escucha:"))
+                  content.addView(sourceSpinner)
+                  content.addView(text("Traducir al idioma:"))
+                  content.addView(targetSpinner)
+                  content.addView(voiceSwitch)
+                  content.addView(volumeText)
+                  content.addView(volumeSeek)
+                  content.addView(volumeNote)
+                  content.addView(startButton)
+                  content.addView(stopButton)
 
-                  LinearLayout layout = new LinearLayout(this);
-                  layout.setOrientation(LinearLayout.VERTICAL);
-                  layout.setGravity(Gravity.CENTER);
-                  layout.setPadding(28, 30, 28, 30);
-                  layout.setBackgroundColor(0xFF000000);
-
-                  TextView title = new TextView(this);
-                  title.setText("SUBTÍTULOS LIVE");
-                  title.setTextColor(0xFFFFFFFF);
-                  title.setTextSize(25);
-                  title.setGravity(Gravity.CENTER);
-
-                  TextView description = new TextView(this);
-                  description.setText(
-                      "PRUEBA DE AUDIO INTERNO\n\n" +
-                      "Esta prueba intenta recibir el sonido de otras aplicaciones.\n" +
-                      "El micrófono del celular NO se utiliza."
-                  );
-                  description.setTextColor(0xFFCCCCCC);
-                  description.setTextSize(16);
-                  description.setGravity(Gravity.CENTER);
-
-                  status = new TextView(this);
-                  status.setText("Estado: esperando autorización");
-                  status.setTextColor(0xFFFFFFFF);
-                  status.setTextSize(17);
-                  status.setGravity(Gravity.CENTER);
-
-                  meter = new TextView(this);
-                  meter.setText("Nivel de audio interno: --");
-                  meter.setTextColor(0xFF00FF88);
-                  meter.setTextSize(19);
-                  meter.setGravity(Gravity.CENTER);
-
-                  startButton = new Button(this);
-                  startButton.setText("PROBAR AUDIO INTERNO");
-                  startButton.setOnClickListener(v -> requestCapture());
-
-                  Button stopButton = new Button(this);
-                  stopButton.setText("DETENER PRUEBA");
-                  stopButton.setOnClickListener(v -> {
-                      Intent stop = new Intent(this, CaptureService.class);
-                      stop.setAction(CaptureService.ACTION_STOP);
-                      startService(stop);
-                      status.setText("Prueba detenida");
-                      meter.setText("Nivel de audio interno: --");
-                  });
-
-                  layout.addView(title);
-                  layout.addView(description);
-                  layout.addView(status);
-                  layout.addView(meter);
-                  layout.addView(startButton);
-                  layout.addView(stopButton);
-
-                  setContentView(layout);
-
-                  IntentFilter filter = new IntentFilter(CaptureService.ACTION_STATUS);
-                  if (Build.VERSION.SDK_INT >= 33) {
-                      registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
-                  } else {
-                      registerReceiver(receiver, filter);
+                  val scroll = ScrollView(this).apply {
+                      setBackgroundColor(Color.BLACK)
+                      addView(content)
                   }
-                  receiverRegistered = true;
+                  setContentView(scroll)
               }
 
-              private void requestCapture() {
-                  MediaProjectionManager manager =
-                      (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+              private fun startCapture() {
+                  prefs.edit()
+                      .putString("source", sourceSpinner.selectedItem as String)
+                      .putString("target", targetSpinner.selectedItem as String)
+                      .putBoolean("voice_enabled", voiceSwitch.isChecked)
+                      .putInt("voice_volume", volumeSeek.progress)
+                      .apply()
 
-                  status.setText("Esperando autorización de Android...");
+                  if (!Settings.canDrawOverlays(this)) {
+                      Toast.makeText(
+                          this,
+                          "Activa el permiso Mostrar sobre otras aplicaciones y vuelve a pulsar Iniciar.",
+                          Toast.LENGTH_LONG
+                      ).show()
+                      startActivityForResult(
+                          Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")),
+                          REQUEST_OVERLAY
+                      )
+                      return
+                  }
 
-                  Intent captureIntent = manager.createScreenCaptureIntent();
-                  startActivityForResult(captureIntent, REQUEST_CAPTURE);
+                  if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                      Toast.makeText(
+                          this,
+                          "Android exige este permiso para copiar audio interno. Esta app no abrirá el micrófono.",
+                          Toast.LENGTH_LONG
+                      ).show()
+                      requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_PERMISSIONS)
+                      return
+                  }
+
+                  // POST_NOTIFICATIONS no se bloquea como requisito para iniciar la captura.
+                  val manager = getSystemService(MediaProjectionManager::class.java)
+                  startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_PROJECTION)
               }
 
-              @Override
-              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-                  super.onActivityResult(requestCode, resultCode, data);
-
-                  if (requestCode == REQUEST_CAPTURE) {
-                      if (resultCode == RESULT_OK && data != null) {
-                          Intent service = new Intent(this, CaptureService.class);
-                          service.putExtra("resultCode", resultCode);
-                          service.putExtra("projectionData", data);
-
-                          if (Build.VERSION.SDK_INT >= 26) {
-                              startForegroundService(service);
-                          } else {
-                              startService(service);
-                          }
-
-                          status.setText("Autorizado. Iniciando captura...");
+              @Deprecated("Android permission callback")
+              override fun onRequestPermissionsResult(
+                  requestCode: Int,
+                  permissions: Array<out String>,
+                  grantResults: IntArray
+              ) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+                  if (requestCode == REQUEST_PERMISSIONS) {
+                      if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                          startCapture()
                       } else {
-                          status.setText("Autorización cancelada");
+                          Toast.makeText(this, "No se concedió el permiso necesario para captura interna.", Toast.LENGTH_LONG).show()
                       }
                   }
               }
 
-              @Override
-              protected void onDestroy() {
-                  if (receiverRegistered) {
-                      unregisterReceiver(receiver);
+              @Deprecated("MediaProjection consent callback")
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == REQUEST_PROJECTION && resultCode == RESULT_OK && data != null) {
+                      val serviceIntent = Intent(this, CaptureService::class.java)
+                          .putExtra("resultCode", resultCode)
+                          .putExtra("projectionData", data)
+                          .putExtra("sourceName", sourceSpinner.selectedItem as String)
+                          .putExtra("targetName", targetSpinner.selectedItem as String)
+
+                      if (Build.VERSION.SDK_INT >= 26) startForegroundService(serviceIntent)
+                      else startService(serviceIntent)
+                      moveTaskToBack(true)
                   }
-                  super.onDestroy();
               }
           }
           EOF
 
-          cat > app/src/main/java/com/subtituloslive/test/CaptureService.java <<'EOF'
-          package com.subtituloslive.test;
+          cat > app/src/main/java/com/subtitulos/live/CaptureService.kt <<'EOF'
+          package com.subtitulos.live
 
-          import android.app.Notification;
-          import android.app.NotificationChannel;
-          import android.app.NotificationManager;
-          import android.app.PendingIntent;
-          import android.app.Service;
-          import android.content.Context;
-          import android.content.Intent;
-          import android.media.AudioAttributes;
-          import android.media.AudioFormat;
-          import android.media.AudioRecord;
-          import android.media.projection.MediaProjection;
-          import android.media.projection.MediaProjectionManager;
-          import android.media.AudioPlaybackCaptureConfiguration;
-          import android.os.Build;
-          import android.os.IBinder;
-          import android.os.Process;
+          import android.app.Activity
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.media.AudioAttributes
+          import android.media.AudioFormat
+          import android.media.AudioRecord
+          import android.media.AudioTrack
+          import android.media.MediaRecorder
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.os.Process
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.WindowManager
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import com.google.android.gms.tasks.Tasks
+          import com.google.mlkit.common.model.DownloadConditions
+          import com.google.mlkit.nl.translate.Translation
+          import com.google.mlkit.nl.translate.TranslateLanguage
+          import com.google.mlkit.nl.translate.Translator
+          import com.google.mlkit.nl.translate.TranslatorOptions
+          import org.json.JSONObject
+          import org.vosk.Model
+          import org.vosk.Recognizer
+          import java.io.File
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.util.Locale
+          import java.util.UUID
+          import java.util.concurrent.ConcurrentHashMap
+          import java.util.concurrent.ExecutorService
+          import java.util.concurrent.Executors
+          import java.util.concurrent.atomic.AtomicBoolean
+          import java.util.zip.ZipInputStream
+          import kotlin.concurrent.thread
+          import kotlin.math.abs
+          import kotlin.math.exp
+          import kotlin.math.sign
 
-          public class CaptureService extends Service {
+          // Nombre visible -> código de idioma -> nombre exacto del modelo Vosk -> código ML Kit.
+          val LANGS = linkedMapOf(
+              "Español" to Triple("es", "vosk-model-small-es-0.42", TranslateLanguage.SPANISH),
+              "Inglés" to Triple("en", "vosk-model-small-en-us-0.15", TranslateLanguage.ENGLISH),
+              "Alemán" to Triple("de", "vosk-model-small-de-0.15", TranslateLanguage.GERMAN),
+              "Coreano" to Triple("ko", "vosk-model-small-ko-0.22", TranslateLanguage.KOREAN),
+              "Portugués" to Triple("pt", "vosk-model-small-pt-0.3", TranslateLanguage.PORTUGUESE),
+              "Francés" to Triple("fr", "vosk-model-small-fr-0.22", TranslateLanguage.FRENCH),
+              "Italiano" to Triple("it", "vosk-model-small-it-0.22", TranslateLanguage.ITALIAN),
+              "Japonés" to Triple("ja", "vosk-model-small-ja-0.22", TranslateLanguage.JAPANESE),
+              "Ruso" to Triple("ru", "vosk-model-small-ru-0.22", TranslateLanguage.RUSSIAN),
+              "Chino" to Triple("zh", "vosk-model-small-cn-0.22", TranslateLanguage.CHINESE)
+          )
 
-              public static final String ACTION_STATUS =
-                  "com.subtituloslive.test.CAPTURE_STATUS";
-              public static final String ACTION_STOP = "STOP_CAPTURE";
-
-              private static final String CHANNEL_ID = "internal_audio_test";
-              private MediaProjection projection;
-              private AudioRecord recorder;
-              private Thread captureThread;
-              private volatile boolean running = false;
-
-              @Override
-              public void onCreate() {
-                  super.onCreate();
-                  createNotificationChannel();
+          class CaptureService : Service(), TextToSpeech.OnInitListener {
+              companion object {
+                  private const val CHANNEL_ID = "live_subtitles"
+                  private const val NOTIFICATION_ID = 4101
               }
 
-              @Override
-              public int onStartCommand(Intent intent, int flags, int startId) {
-                  if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-                      stopCapture();
-                      stopSelf();
-                      return START_NOT_STICKY;
+              private val running = AtomicBoolean(false)
+              @Volatile private var recorder: AudioRecord? = null
+              @Volatile private var projection: MediaProjection? = null
+              @Volatile private var overlay: LinearLayout? = null
+              @Volatile private var subtitleView: TextView? = null
+              @Volatile private var statusView: TextView? = null
+              @Volatile private var translator: Translator? = null
+              @Volatile private var tts: TextToSpeech? = null
+              @Volatile private var ttsReady = false
+              @Volatile private var translationReady = false
+              @Volatile private var targetLocale = Locale("es", "ES")
+              @Volatile private var voiceEnabled = true
+              private var projectionCallback: MediaProjection.Callback? = null
+              private var translationQueue: ExecutorService? = null
+              private val ttsFiles = ConcurrentHashMap<String, File>()
+              private val ui = Handler(Looper.getMainLooper())
+              private val fontSizes = floatArrayOf(14f, 18f, 22f, 28f, 36f, 46f)
+              private var fontSizeIndex = 2
+              @Volatile private var lastFinalText = ""
+              @Volatile private var lastLevelUpdate = 0L
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onInit(status: Int) {
+                  if (status != TextToSpeech.SUCCESS) {
+                      ttsReady = false
+                      showStatus("No se pudo iniciar el motor de voz del teléfono.")
+                      return
                   }
+                  configureTtsLanguage()
+              }
 
-                  startForeground(1, createNotification());
+              private fun configureTtsLanguage() {
+                  val engine = tts ?: return
+                  val result = engine.setLanguage(targetLocale)
+                  ttsReady = result >= TextToSpeech.LANG_AVAILABLE
+                  engine.setSpeechRate(1.0f)
+                  engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                      override fun onStart(utteranceId: String?) {}
 
-                  if (intent == null) {
-                      sendStatus("No se recibió autorización", 0);
-                      stopSelf();
-                      return START_NOT_STICKY;
-                  }
+                      override fun onDone(utteranceId: String?) {
+                          if (utteranceId == null) return
+                          val file = ttsFiles.remove(utteranceId) ?: return
+                          thread(name = "translated-voice-playback") { playWavWithGain(file) }
+                      }
 
-                  int resultCode = intent.getIntExtra("resultCode", 0);
-                  Intent data;
-
-                  if (Build.VERSION.SDK_INT >= 33) {
-                      data = intent.getParcelableExtra("projectionData", Intent.class);
+                      override fun onError(utteranceId: String?) {
+                          if (utteranceId != null) ttsFiles.remove(utteranceId)?.delete()
+                          showStatus("El motor de voz no pudo sintetizar una frase.")
+                      }
+                  })
+                  if (!ttsReady) {
+                      showStatus("No hay voz instalada para el idioma de destino. Instala sus datos de voz en Android.")
                   } else {
-                      data = intent.getParcelableExtra("projectionData");
+                      showStatus("Voz lista para ${targetLocale.displayLanguage}.")
+                  }
+              }
+
+              @Suppress("DEPRECATION")
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent == null) return START_NOT_STICKY
+                  stopCaptureResources()
+                  createNotificationChannel()
+
+                  val notificationIntent = Intent(this, MainActivity::class.java)
+                  val pending = PendingIntent.getActivity(
+                      this, 0, notificationIntent,
+                      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                  )
+                  val notification = Notification.Builder(this, CHANNEL_ID)
+                      .setContentTitle("Subtítulos Live activos")
+                      .setContentText("Intentando capturar audio interno")
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setContentIntent(pending)
+                      .setOngoing(true)
+                      .build()
+
+                  if (Build.VERSION.SDK_INT >= 29) {
+                      startForeground(
+                          NOTIFICATION_ID,
+                          notification,
+                          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                      )
+                  } else {
+                      startForeground(NOTIFICATION_ID, notification)
                   }
 
-                  if (data == null) {
-                      sendStatus("No se recibió el permiso de captura", 0);
-                      stopSelf();
-                      return START_NOT_STICKY;
+                  val consentData: Intent? = if (Build.VERSION.SDK_INT >= 33) {
+                      intent.getParcelableExtra("projectionData", Intent::class.java)
+                  } else {
+                      intent.getParcelableExtra("projectionData")
+                  }
+                  if (consentData == null) {
+                      showStatus("Falta la autorización de captura de Android.")
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+
+                  val sourceName = intent.getStringExtra("sourceName") ?: "Inglés"
+                  val targetName = intent.getStringExtra("targetName") ?: "Español"
+                  val source = LANGS[sourceName] ?: LANGS.getValue("Inglés")
+                  val target = LANGS[targetName] ?: LANGS.getValue("Español")
+                  targetLocale = localeFor(target.first)
+                  voiceEnabled = getSharedPreferences("cfg", MODE_PRIVATE)
+                      .getBoolean("voice_enabled", true)
+                  lastFinalText = ""
+                  translationReady = source.third == target.third
+                  translationQueue = Executors.newSingleThreadExecutor()
+
+                  if (tts == null) {
+                      tts = TextToSpeech(this, this)
+                  } else {
+                      configureTtsLanguage()
                   }
 
                   try {
-                      MediaProjectionManager manager =
-                          (MediaProjectionManager) getSystemService(
-                              Context.MEDIA_PROJECTION_SERVICE);
+                      val manager = getSystemService(MediaProjectionManager::class.java)
+                      val mediaProjection = manager.getMediaProjection(
+                          intent.getIntExtra("resultCode", Activity.RESULT_CANCELED),
+                          consentData
+                      ) ?: throw IllegalStateException("Android no entregó MediaProjection.")
 
-                      projection = manager.getMediaProjection(resultCode, data);
-
-                      if (projection == null) {
-                          sendStatus("Android no permitió crear la captura", 0);
-                          stopSelf();
-                          return START_NOT_STICKY;
-                      }
-
-                      projection.registerCallback(
-                          new MediaProjection.Callback() {
-                              @Override
-                              public void onStop() {
-                                  stopCapture();
-                                  stopSelf();
-                              }
-                          },
-                          null
-                      );
-
-                      startAudioCapture();
-
-                  } catch (SecurityException | IllegalStateException e) {
-                      sendStatus("Captura bloqueada: " + e.getMessage(), 0);
-                      stopSelf();
-                  }
-
-                  return START_NOT_STICKY;
-              }
-
-              private void startAudioCapture() {
-                  int sampleRate = 16000;
-                  int bufferSize = AudioRecord.getMinBufferSize(
-                      sampleRate,
-                      AudioFormat.CHANNEL_IN_MONO,
-                      AudioFormat.ENCODING_PCM_16BIT
-                  );
-
-                  if (bufferSize <= 0) {
-                      sendStatus("No se pudo preparar el formato de audio", 0);
-                      stopSelf();
-                      return;
-                  }
-
-                  AudioPlaybackCaptureConfiguration config =
-                      new AudioPlaybackCaptureConfiguration.Builder(projection)
-                          .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                          .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                          .build();
-
-                  AudioFormat format = new AudioFormat.Builder()
-                      .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                      .setSampleRate(sampleRate)
-                      .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                      .build();
-
-                  recorder = new AudioRecord.Builder()
-                      .setAudioFormat(format)
-                      .setBufferSizeInBytes(bufferSize * 2)
-                      .setAudioPlaybackCaptureConfig(config)
-                      .build();
-
-                  if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
-                      sendStatus("No se pudo iniciar AudioRecord", 0);
-                      stopSelf();
-                      return;
-                  }
-
-                  recorder.startRecording();
-                  running = true;
-
-                  sendStatus("Captura interna iniciada. Reproduce un LIVE.", 0);
-
-                  captureThread = new Thread(() -> {
-                      Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
-
-                      short[] samples = new short[bufferSize / 2];
-
-                      while (running && recorder != null) {
-                          int count = recorder.read(
-                              samples, 0, samples.length,
-                              AudioRecord.READ_BLOCKING
-                          );
-
-                          if (count > 0) {
-                              double sum = 0;
-
-                              for (int i = 0; i < count; i++) {
-                                  double value = samples[i] / 32768.0;
-                                  sum += value * value;
-                              }
-
-                              double rms = Math.sqrt(sum / count);
-                              int level = (int) Math.min(100, rms * 400);
-
-                              sendStatus(
-                                  level > 0
-                                      ? "Captura activa: se reciben muestras de audio"
-                                      : "Captura activa: esperando sonido",
-                                  level
-                              );
-                          } else if (count < 0) {
-                              sendStatus("Error leyendo audio: " + count, 0);
-                              break;
+                      projection = mediaProjection
+                      val callback = object : MediaProjection.Callback() {
+                          override fun onStop() {
+                              showStatus("Android detuvo la captura.")
+                              stopSelf()
                           }
                       }
-                  }, "InternalAudioCapture");
+                      projectionCallback = callback
+                      mediaProjection.registerCallback(callback, ui)
 
-                  captureThread.start();
-              }
+                      showOverlay()
+                      running.set(true)
 
-              private void sendStatus(String message, int level) {
-                  Intent update = new Intent(ACTION_STATUS);
-                  update.setPackage(getPackageName());
-                  update.putExtra("message", message);
-                  update.putExtra("level", level);
-                  sendBroadcast(update);
-              }
+                      val activeTranslator = if (source.third == target.third) null else {
+                          Translation.getClient(
+                              TranslatorOptions.Builder()
+                                  .setSourceLanguage(source.third)
+                                  .setTargetLanguage(target.third)
+                                  .build()
+                          )
+                      }
+                      translator = activeTranslator
 
-              private Notification createNotification() {
-                  Intent openApp = new Intent(this, MainActivity.class);
-
-                  PendingIntent pendingIntent = PendingIntent.getActivity(
-                      this,
-                      0,
-                      openApp,
-                      PendingIntent.FLAG_IMMUTABLE
-                  );
-
-                  Notification.Builder builder;
-
-                  if (Build.VERSION.SDK_INT >= 26) {
-                      builder = new Notification.Builder(this, CHANNEL_ID);
-                  } else {
-                      builder = new Notification.Builder(this);
+                      thread(name = "live-audio-capture") {
+                          runRecognition(mediaProjection, source, activeTranslator)
+                      }
+                  } catch (e: Exception) {
+                      showStatus("No se pudo iniciar la captura: ${e.message ?: e.javaClass.simpleName}")
+                      stopSelf()
                   }
-
-                  return builder
-                      .setContentTitle("Subtítulos Live")
-                      .setContentText("Prueba de captura de audio interno")
-                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                      .setContentIntent(pendingIntent)
-                      .setOngoing(true)
-                      .build();
+                  return START_NOT_STICKY
               }
 
-              private void createNotificationChannel() {
-                  if (Build.VERSION.SDK_INT >= 26) {
-                      NotificationChannel channel = new NotificationChannel(
-                          CHANNEL_ID,
-                          "Captura de audio interno",
-                          NotificationManager.IMPORTANCE_LOW
-                      );
-
-                      NotificationManager manager =
-                          getSystemService(NotificationManager.class);
-
-                      manager.createNotificationChannel(channel);
-                  }
+              private fun localeFor(code: String): Locale = when (code) {
+                  "en" -> Locale.US
+                  "es" -> Locale("es", "ES")
+                  "pt" -> Locale("pt", "BR")
+                  "fr" -> Locale.FRANCE
+                  "de" -> Locale.GERMANY
+                  "it" -> Locale.ITALY
+                  "ru" -> Locale("ru", "RU")
+                  "ja" -> Locale.JAPAN
+                  "ko" -> Locale.KOREA
+                  "zh" -> Locale.SIMPLIFIED_CHINESE
+                  else -> Locale.forLanguageTag(code)
               }
 
-              private void stopCapture() {
-                  running = false;
+              private fun runRecognition(
+                  mediaProjection: MediaProjection,
+                  source: Triple<String, String, String>,
+                  activeTranslator: Translator?
+              ) {
+                  var model: Model? = null
+                  var recognizer: Recognizer? = null
+                  var localRecorder: AudioRecord? = null
 
-                  if (recorder != null) {
-                      try {
-                          recorder.stop();
-                      } catch (Exception ignored) {
+                  try {
+                      showStatus("Descargando/preparando reconocimiento ${source.first}…")
+                      model = loadModel(source.first, source.second)
+                      if (!running.get()) return
+                      recognizer = Recognizer(model, 16000.0f)
+
+                      if (activeTranslator != null) {
+                          showStatus("Preparando el modelo de traducción…")
+                          try {
+                              Tasks.await(activeTranslator.downloadModelIfNeeded(DownloadConditions.Builder().build()))
+                              translationReady = true
+                          } catch (e: Exception) {
+                              translationReady = false
+                              showStatus("No se pudo descargar el traductor: ${e.message ?: "sin conexión"}")
+                          }
+                      }
+                      if (!running.get()) return
+
+                      val captureConfig = android.media.AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
+                          .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                          .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                          .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                          .build()
+
+                      val sampleRate = 16000
+                      val channelMask = AudioFormat.CHANNEL_IN_MONO
+                      val minBuffer = AudioRecord.getMinBufferSize(
+                          sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT
+                      )
+                      if (minBuffer <= 0) {
+                          throw IllegalStateException("Android no admite el formato PCM de captura ($minBuffer).")
                       }
 
-                      recorder.release();
-                      recorder = null;
-                  }
+                      val format = AudioFormat.Builder()
+                          .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                          .setSampleRate(sampleRate)
+                          .setChannelMask(channelMask)
+                          .build()
 
-                  if (projection != null) {
-                      projection.stop();
-                      projection = null;
-                  }
+                      localRecorder = AudioRecord.Builder()
+                          .setAudioPlaybackCaptureConfig(captureConfig)
+                          .setAudioFormat(format)
+                          .setBufferSizeInBytes(maxOf(minBuffer * 2, 8192))
+                          .build()
 
-                  sendStatus("Captura detenida", 0);
+                      if (localRecorder.state != AudioRecord.STATE_INITIALIZED) {
+                          throw IllegalStateException("AudioRecord no pudo inicializar la captura interna.")
+                      }
+
+                      recorder = localRecorder
+                      localRecorder.startRecording()
+                      showStatus("Captura interna activa. Abre TikTok LIVE y reproduce el sonido.")
+
+                      val buffer = ByteArray(4096)
+                      while (running.get()) {
+                          val count = localRecorder.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
+                          if (count < 0) {
+                              throw IllegalStateException("Error de lectura de audio: $count")
+                          }
+                          if (count == 0) continue
+
+                          updateAudioLevel(buffer, count)
+                          if (recognizer.acceptWaveForm(buffer, count)) {
+                              val spoken = JSONObject(recognizer.result).optString("text").trim()
+                              if (spoken.isNotBlank() && spoken != lastFinalText) {
+                                  lastFinalText = spoken
+                                  enqueueTranslation(spoken, activeTranslator)
+                              }
+                          } else {
+                              val partial = JSONObject(recognizer.partialResult).optString("partial").trim()
+                              if (partial.isNotBlank()) showPartial(partial)
+                          }
+                      }
+                  } catch (e: Exception) {
+                      if (running.get()) {
+                          showStatus("Error de captura/reconocimiento: ${e.message ?: e.javaClass.simpleName}")
+                      }
+                  } finally {
+                      try { localRecorder?.stop() } catch (_: Exception) {}
+                      try { localRecorder?.release() } catch (_: Exception) {}
+                      recorder = null
+                      try { recognizer?.close() } catch (_: Exception) {}
+                      try { model?.close() } catch (_: Exception) {}
+                  }
               }
 
-              @Override
-              public void onDestroy() {
-                  stopCapture();
-                  super.onDestroy();
+              private fun updateAudioLevel(data: ByteArray, count: Int) {
+                  val now = android.os.SystemClock.elapsedRealtime()
+                  if (now - lastLevelUpdate < 450) return
+                  lastLevelUpdate = now
+
+                  var sum = 0.0
+                  var samples = 0
+                  var index = 0
+                  while (index + 1 < count) {
+                      val sample = ((data[index + 1].toInt() shl 8) or (data[index].toInt() and 0xff)).toShort().toInt()
+                      val normalized = sample / 32768.0
+                      sum += normalized * normalized
+                      samples++
+                      index += 2
+                  }
+                  val rms = if (samples == 0) 0.0 else kotlin.math.sqrt(sum / samples)
+                  val percent = (rms * 350.0).toInt().coerceIn(0, 100)
+                  ui.post {
+                      statusView?.text = if (percent == 0) {
+                          "Audio interno: 0% — esperando señal"
+                      } else {
+                          "Audio interno recibido: $percent%"
+                      }
+                  }
               }
 
-              @Override
-              public IBinder onBind(Intent intent) {
-                  return null;
+              private fun enqueueTranslation(text: String, activeTranslator: Translator?) {
+                  val queue = translationQueue ?: return
+                  try {
+                      queue.execute {
+                          if (!running.get()) return@execute
+                          try {
+                              if (activeTranslator != null && !translationReady) {
+                                  showStatus("Audio recibido; el modelo de traducción todavía no está disponible.")
+                                  return@execute
+                              }
+                              val translated = if (activeTranslator == null) {
+                                  text
+                              } else {
+                                  Tasks.await(activeTranslator.translate(text))
+                              }
+                              if (!running.get()) return@execute
+                              ui.post {
+                                  if (!running.get()) return@post
+                                  subtitleView?.text = "$text\n→ $translated"
+                                  speakTranslated(translated)
+                              }
+                          } catch (e: Exception) {
+                              showStatus("Error al traducir: ${e.message ?: e.javaClass.simpleName}")
+                          }
+                      }
+                  } catch (_: Exception) {
+                      // La cola puede estar cerrándose al detener el servicio.
+                  }
+              }
+
+              private fun speakTranslated(text: String) {
+                  if (!voiceEnabled || !ttsReady || text.isBlank()) return
+                  val volume = getSharedPreferences("cfg", MODE_PRIVATE).getInt("voice_volume", 100)
+                  if (volume <= 0) return
+                  val engine = tts ?: return
+                  val id = UUID.randomUUID().toString()
+                  val file = File(cacheDir, "translated-$id.wav")
+                  ttsFiles[id] = file
+                  val result = engine.synthesizeToFile(text, Bundle(), file, id)
+                  if (result != TextToSpeech.SUCCESS) {
+                      ttsFiles.remove(id)
+                      file.delete()
+                      showStatus("El motor de voz no aceptó la síntesis de audio.")
+                  }
+              }
+
+              private fun playWavWithGain(file: File) {
+                  try {
+                      if (!file.exists() || !running.get()) return
+                      val bytes = file.readBytes()
+                      if (bytes.size < 44 || String(bytes, 0, 4, Charsets.US_ASCII) != "RIFF") {
+                          throw IllegalStateException("El motor TTS no generó un WAV válido.")
+                      }
+
+                      var offset = 12
+                      var formatCode = 0
+                      var channels = 0
+                      var sampleRate = 0
+                      var bitsPerSample = 0
+                      var dataOffset = -1
+                      var dataLength = 0
+
+                      while (offset + 8 <= bytes.size) {
+                          val chunkName = String(bytes, offset, 4, Charsets.US_ASCII)
+                          val chunkSizeLong = readUInt32(bytes, offset + 4)
+                          val chunkSize = chunkSizeLong.coerceAtMost(bytes.size.toLong()).toInt()
+                          val chunkStart = offset + 8
+                          if (chunkStart > bytes.size) break
+
+                          when (chunkName) {
+                              "fmt " -> {
+                                  if (chunkSize >= 16 && chunkStart + 16 <= bytes.size) {
+                                      formatCode = readUInt16(bytes, chunkStart)
+                                      channels = readUInt16(bytes, chunkStart + 2)
+                                      sampleRate = readUInt32(bytes, chunkStart + 4).toInt()
+                                      bitsPerSample = readUInt16(bytes, chunkStart + 14)
+                                  }
+                              }
+                              "data" -> {
+                                  dataOffset = chunkStart
+                                  dataLength = minOf(chunkSize, bytes.size - chunkStart)
+                                  break
+                              }
+                          }
+                          offset = chunkStart + chunkSize + (chunkSize and 1)
+                      }
+
+                      if (formatCode != 1 || bitsPerSample != 16 || channels !in 1..2 || sampleRate <= 0 || dataOffset < 0) {
+                          throw IllegalStateException("Formato WAV no compatible para amplificación.")
+                      }
+
+                      val sampleCount = dataLength / 2
+                      val pcm = ShortArray(sampleCount)
+                      val gain = getSharedPreferences("cfg", MODE_PRIVATE)
+                          .getInt("voice_volume", 100).coerceIn(0, 200) / 100.0
+
+                      var p = dataOffset
+                      for (i in 0 until sampleCount) {
+                          val sample = ((bytes[p + 1].toInt() shl 8) or (bytes[p].toInt() and 0xff)).toShort().toInt()
+                          val amplified = (sample / 32768.0 * gain).toFloat()
+                          val magnitude = abs(amplified)
+                          val limited = if (magnitude <= 0.85f) {
+                              amplified
+                          } else {
+                              sign(amplified) * (0.85f + 0.15f * (1.0 - exp(((0.85f - magnitude) / 0.15f).toDouble())).toFloat())
+                          }
+                          pcm[i] = (limited * 32767f).toInt().coerceIn(-32768, 32767).toShort()
+                          p += 2
+                      }
+
+                      val outputMask = if (channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
+                      val minOutput = AudioTrack.getMinBufferSize(
+                          sampleRate, outputMask, AudioFormat.ENCODING_PCM_16BIT
+                      ).coerceAtLeast(4096)
+
+                      val audioAttributes = AudioAttributes.Builder()
+                          .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
+                          .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                          .build()
+                      val audioFormat = AudioFormat.Builder()
+                          .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                          .setSampleRate(sampleRate)
+                          .setChannelMask(outputMask)
+                          .build()
+                      val track = AudioTrack.Builder()
+                          .setAudioAttributes(audioAttributes)
+                          .setAudioFormat(audioFormat)
+                          .setBufferSizeInBytes(maxOf(minOutput, 4096))
+                          .setTransferMode(AudioTrack.MODE_STREAM)
+                          .build()
+
+                      try {
+                          if (track.state != AudioTrack.STATE_INITIALIZED) {
+                              throw IllegalStateException("No se pudo reproducir la voz traducida.")
+                          }
+                          track.play()
+                          var cursor = 0
+                          while (cursor < pcm.size && running.get()) {
+                              val amount = minOf(2048, pcm.size - cursor)
+                              val written = track.write(pcm, cursor, amount, AudioTrack.WRITE_BLOCKING)
+                              if (written < 0) break
+                              cursor += written
+                          }
+                      } finally {
+                          try { track.stop() } catch (_: Exception) {}
+                          track.release()
+                      }
+                  } catch (e: Exception) {
+                      showStatus("No se pudo reproducir la voz amplificada: ${e.message}")
+                  } finally {
+                      file.delete()
+                  }
+              }
+
+              private fun readUInt16(data: ByteArray, offset: Int): Int {
+                  return (data[offset].toInt() and 0xff) or
+                      ((data[offset + 1].toInt() and 0xff) shl 8)
+              }
+
+              private fun readUInt32(data: ByteArray, offset: Int): Long {
+                  return (data[offset].toLong() and 0xff) or
+                      ((data[offset + 1].toLong() and 0xff) shl 8) or
+                      ((data[offset + 2].toLong() and 0xff) shl 16) or
+                      ((data[offset + 3].toLong() and 0xff) shl 24)
+              }
+
+              private fun downloadModel(languageCode: String, modelName: String): File {
+                  showStatus("Descargando modelo Vosk $languageCode. Solo se hace una vez…")
+                  val targetDir = File(filesDir, "model-$languageCode")
+                  val tempDir = File(filesDir, "tmp-$languageCode")
+                  targetDir.deleteRecursively()
+                  tempDir.deleteRecursively()
+                  tempDir.mkdirs()
+                  val zipFile = File(cacheDir, "vosk-$languageCode.zip")
+
+                  try {
+                      val connection = URL("https://alphacephei.com/vosk/models/$modelName.zip")
+                          .openConnection() as HttpURLConnection
+                      connection.connectTimeout = 20000
+                      connection.readTimeout = 90000
+                      connection.instanceFollowRedirects = true
+                      connection.connect()
+                      if (connection.responseCode !in 200..299) {
+                          throw IllegalStateException("Descarga del modelo falló: HTTP ${connection.responseCode}")
+                      }
+                      connection.inputStream.use { input -> zipFile.outputStream().use { output -> input.copyTo(output) } }
+                      connection.disconnect()
+
+                      ZipInputStream(zipFile.inputStream()).use { zip ->
+                          var entry = zip.nextEntry
+                          val base = tempDir.canonicalPath + File.separator
+                          while (entry != null) {
+                              val outputFile = File(tempDir, entry.name)
+                              if (!outputFile.canonicalPath.startsWith(base)) {
+                                  throw SecurityException("El ZIP contiene una ruta no permitida.")
+                              }
+                              if (entry.isDirectory) {
+                                  outputFile.mkdirs()
+                              } else {
+                                  outputFile.parentFile?.mkdirs()
+                                  outputFile.outputStream().use { zip.copyTo(it) }
+                              }
+                              zip.closeEntry()
+                              entry = zip.nextEntry
+                          }
+                      }
+
+                      val modelRoot = tempDir.walkTopDown()
+                          .firstOrNull { it.isDirectory && File(it, "am").isDirectory }
+                          ?: throw IllegalStateException("El ZIP no contiene una carpeta de modelo Vosk válida.")
+
+                      if (!modelRoot.copyRecursively(targetDir, overwrite = true)) {
+                          throw IllegalStateException("No se pudo instalar el modelo Vosk.")
+                      }
+                      if (!File(targetDir, "am").isDirectory) {
+                          throw IllegalStateException("El modelo Vosk quedó incompleto.")
+                      }
+                      return targetDir
+                  } finally {
+                      zipFile.delete()
+                      tempDir.deleteRecursively()
+                  }
+              }
+
+              private fun loadModel(languageCode: String, modelName: String): Model {
+                  val dir = File(filesDir, "model-$languageCode")
+                  if (!File(dir, "am").isDirectory) downloadModel(languageCode, modelName)
+                  return try {
+                      Model(dir.absolutePath)
+                  } catch (first: Exception) {
+                      dir.deleteRecursively()
+                      downloadModel(languageCode, modelName)
+                      Model(dir.absolutePath)
+                  }
+              }
+
+              private fun showOverlay() {
+                  val prefs = getSharedPreferences("overlay_settings", MODE_PRIVATE)
+                  fontSizeIndex = prefs.getInt("fontSize", 2).coerceIn(0, fontSizes.lastIndex)
+                  val wm = getSystemService(WindowManager::class.java)
+                  val metrics = resources.displayMetrics
+
+                  val status = TextView(this).apply {
+                      text = "Preparando captura interna…"
+                      setTextColor(0xffbdbdbd.toInt())
+                      textSize = 12f
+                      gravity = Gravity.CENTER
+                      setPadding(8, 8, 8, 8)
+                  }
+                  val caption = TextView(this).apply {
+                      setTextColor(Color.WHITE)
+                      textSize = fontSizes[fontSizeIndex]
+                      gravity = Gravity.CENTER
+                      setBackgroundColor(0xdd000000.toInt())
+                      setPadding(24, 18, 24, 18)
+                      text = "Preparando subtítulos…"
+                  }
+
+                  fun control(label: String, action: () -> Unit) = TextView(this).apply {
+                      text = label
+                      setTextColor(Color.WHITE)
+                      textSize = 18f
+                      gravity = Gravity.CENTER
+                      setBackgroundColor(0xee333333.toInt())
+                      setPadding(30, 12, 30, 12)
+                      setOnClickListener { action() }
+                  }
+
+                  val controls = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER
+                      addView(control("A−") { changeFontSize(fontSizeIndex - 1) })
+                      addView(control("A+") { changeFontSize(fontSizeIndex + 1) })
+                      addView(control("×") { stopSelf() })
+                  }
+
+                  val container = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(0xdd000000.toInt())
+                      addView(status)
+                      addView(caption)
+                      addView(controls)
+                  }
+
+                  val params = WindowManager.LayoutParams(
+                      (metrics.widthPixels * 0.94f).toInt(),
+                      WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                      PixelFormat.TRANSLUCENT
+                  ).apply {
+                      gravity = Gravity.TOP or Gravity.START
+                      x = prefs.getInt("x", (metrics.widthPixels * 0.03f).toInt())
+                      y = prefs.getInt("y", metrics.heightPixels * 2 / 3)
+                  }
+
+                  var downX = 0f
+                  var downY = 0f
+                  var startX = 0
+                  var startY = 0
+                  caption.setOnTouchListener { _, event ->
+                      when (event.action) {
+                          MotionEvent.ACTION_DOWN -> {
+                              downX = event.rawX
+                              downY = event.rawY
+                              startX = params.x
+                              startY = params.y
+                          }
+                          MotionEvent.ACTION_MOVE -> {
+                              params.x = startX + (event.rawX - downX).toInt()
+                              params.y = startY + (event.rawY - downY).toInt()
+                              try { wm.updateViewLayout(container, params) } catch (_: Exception) {}
+                          }
+                          MotionEvent.ACTION_UP -> {
+                              prefs.edit().putInt("x", params.x).putInt("y", params.y).apply()
+                          }
+                      }
+                      true
+                  }
+
+                  wm.addView(container, params)
+                  overlay = container
+                  subtitleView = caption
+                  statusView = status
+              }
+
+              private fun changeFontSize(value: Int) {
+                  fontSizeIndex = value.coerceIn(0, fontSizes.lastIndex)
+                  subtitleView?.textSize = fontSizes[fontSizeIndex]
+                  getSharedPreferences("overlay_settings", MODE_PRIVATE)
+                      .edit().putInt("fontSize", fontSizeIndex).apply()
+              }
+
+              private fun showPartial(text: String) {
+                  ui.post {
+                      if (running.get()) subtitleView?.text = text
+                  }
+              }
+
+              private fun showStatus(message: String) {
+                  ui.post {
+                      statusView?.text = message
+                      if (subtitleView == null) statusView?.text = message
+                  }
+              }
+
+              private fun createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      val manager = getSystemService(NotificationManager::class.java)
+                      manager.createNotificationChannel(
+                          NotificationChannel(CHANNEL_ID, "Subtítulos Live", NotificationManager.IMPORTANCE_LOW)
+                      )
+                  }
+              }
+
+              private fun stopCaptureResources() {
+                  running.set(false)
+                  try { recorder?.stop() } catch (_: Exception) {}
+                  try { recorder?.release() } catch (_: Exception) {}
+                  recorder = null
+
+                  val currentProjection = projection
+                  projection = null
+                  try {
+                      val callback = projectionCallback
+                      if (currentProjection != null && callback != null) currentProjection.unregisterCallback(callback)
+                  } catch (_: Exception) {}
+                  projectionCallback = null
+                  try { currentProjection?.stop() } catch (_: Exception) {}
+
+                  try {
+                      overlay?.let { getSystemService(WindowManager::class.java).removeView(it) }
+                  } catch (_: Exception) {}
+                  overlay = null
+                  subtitleView = null
+                  statusView = null
+
+                  try { translator?.close() } catch (_: Exception) {}
+                  translator = null
+                  translationReady = false
+                  try { translationQueue?.shutdownNow() } catch (_: Exception) {}
+                  translationQueue = null
+                  try { tts?.stop() } catch (_: Exception) {}
+                  for (file in ttsFiles.values) file.delete()
+                  ttsFiles.clear()
+              }
+
+              override fun onDestroy() {
+                  stopCaptureResources()
+                  try { tts?.shutdown() } catch (_: Exception) {}
+                  tts = null
+                  super.onDestroy()
               }
           }
           EOF
 
       - name: Compilar APK
-        run: gradle assembleDebug
+        run: gradle --no-daemon assembleDebug
 
-      - name: Guardar APK
+      - name: Publicar APK como artefacto descargable
         uses: actions/upload-artifact@v4
         with:
-          name: SubtitulosLive-Prueba-Audio-Interno
+          name: SubtitulosLive-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          compression-level: 0
