@@ -17,6 +17,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+
       - name: Preparar proyecto Android
         shell: bash
         run: |
@@ -51,9 +56,18 @@ jobs:
           android.useAndroidX=true
           org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
           org.gradle.parallel=true
+          android.nonTransitiveRClass=true
           __EOF__
 
           mkdir -p app/src/main/java/com/subtitulos/live
+          mkdir -p app/src/main/res/values
+
+          cat > app/src/main/res/values/strings.xml <<'__EOF__'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Subtítulos Live</string>
+          </resources>
+          __EOF__
 
           cat > app/build.gradle.kts <<'__EOF__'
           plugins {
@@ -81,10 +95,16 @@ jobs:
               kotlinOptions {
                   jvmTarget = "17"
               }
+
+              packaging {
+                  jniLibs {
+                      useLegacyPackaging = true
+                  }
+              }
           }
 
           dependencies {
-              implementation("com.alphacephei:vosk-android:0.3.47")
+              implementation("com.alphacephei:vosk-android:0.3.47@aar")
               implementation("net.java.dev.jna:jna:5.13.0@aar")
               implementation("com.google.mlkit:translate:17.0.3")
           }
@@ -101,7 +121,7 @@ jobs:
 
               <application
                   android:allowBackup="false"
-                  android:label="Subtítulos Live"
+                  android:label="@string/app_name"
                   android:theme="@android:style/Theme.Material.NoActionBar"
                   android:usesCleartextTraffic="false">
                   <activity
@@ -294,7 +314,6 @@ jobs:
           import android.os.IBinder
           import android.os.Looper
           import android.speech.tts.TextToSpeech
-          import android.speech.tts.UtteranceProgressListener
           import android.view.Gravity
           import android.view.MotionEvent
           import android.view.WindowManager
@@ -473,12 +492,12 @@ jobs:
                           translator?.translate(text)
                               ?.addOnSuccessListener { translated ->
                                   if (running.get()) {
-                                      showSubtitle("$text\\n$translated")
+                                      showSubtitle("$text\n$translated")
                                       if (finalResult) speak(translated)
                                   }
                               }
                               ?.addOnFailureListener {
-                                  showSubtitle("$text\\n(Error de traducción)")
+                                  showSubtitle("$text\n(Error de traducción)")
                               }
                       }
                   }
@@ -510,7 +529,7 @@ jobs:
                       gravity = Gravity.CENTER
                       setBackgroundColor(0xCC000000.toInt())
                       setPadding(20, 14, 20, 14)
-                      text = "Preparando subtítulos…"
+                      this.text = "Preparando subtítulos…"
                   }
 
                   val controls = LinearLayout(this).apply {
@@ -710,7 +729,6 @@ jobs:
 
       - name: Compilar APK
         run: |
-          gradle --version
           gradle assembleDebug --stacktrace
 
       - name: Publicar APK
