@@ -411,7 +411,7 @@ jobs:
                       }
                   }, mainHandler)
 
-                  running = AtomicBoolean(true)
+                  running.set(true)
                   tts?.shutdown()
                   tts = TextToSpeech(this, this)
                   createOverlay()
@@ -523,7 +523,7 @@ jobs:
                   val metrics = resources.displayMetrics
                   val windowManager = getSystemService(WindowManager::class.java)
 
-                  val text = TextView(this).apply {
+                  val subtitleTextView = TextView(this).apply {
                       setTextColor(Color.WHITE)
                       textSize = sizes[sizeIndex]
                       gravity = Gravity.CENTER
@@ -537,6 +537,7 @@ jobs:
                       gravity = Gravity.CENTER
                       setBackgroundColor(0xEE171717.toInt())
                   }
+
                   val smaller = Button(this).apply {
                       text = "A−"
                       setOnClickListener { changeSize(sizeIndex - 1) }
@@ -549,7 +550,7 @@ jobs:
                       text = "Voz: Sí"
                       setOnClickListener {
                           speechEnabled = !speechEnabled
-                          text = if (speechEnabled) "Voz: Sí" else "Voz: No"
+                          this.text = if (speechEnabled) "Voz: Sí" else "Voz: No"
                           if (!speechEnabled) tts?.stop()
                       }
                   }
@@ -584,7 +585,7 @@ jobs:
                   val container = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setBackgroundColor(0xCC000000.toInt())
-                      addView(text)
+                      addView(subtitleTextView)
                       addView(controls)
                       addView(volumeLabel)
                       addView(volume)
@@ -606,7 +607,7 @@ jobs:
                   var downY = 0f
                   var startX = 0
                   var startY = 0
-                  text.setOnTouchListener { _, event ->
+                  subtitleTextView.setOnTouchListener { _, event ->
                       when (event.action) {
                           MotionEvent.ACTION_DOWN -> {
                               downX = event.rawX
@@ -631,7 +632,7 @@ jobs:
 
                   windowManager.addView(container, params)
                   overlay = container
-                  subtitleView = text
+                  subtitleView = subtitleTextView
                   windowParams = params
               }
 
