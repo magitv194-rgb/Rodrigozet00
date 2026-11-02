@@ -54,17 +54,10 @@ jobs:
 
           cat > settings.gradle.kts <<'__EOF__'
           pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
           }
           dependencyResolutionManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-              }
+              repositories { google(); mavenCentral() }
           }
           rootProject.name = "SubtitulosLive"
           include(":app")
@@ -119,10 +112,7 @@ jobs:
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
               }
-
-              kotlinOptions {
-                  jvmTarget = "17"
-              }
+              kotlinOptions { jvmTarget = "17" }
 
               buildTypes {
                   release {
@@ -163,8 +153,6 @@ jobs:
               <string name="label_target">Traducir al idioma</string>
               <string name="btn_start">Iniciar subtítulos</string>
               <string name="btn_stop">Detener</string>
-              <string name="msg_permission_overlay">Concede permiso de superposición para continuar</string>
-              <string name="msg_permission_audio">Concede permiso de micrófono para continuar</string>
               <string name="msg_preparing">Preparando subtítulos…</string>
               <string name="msg_downloading_model">Descargando modelo de reconocimiento…</string>
               <string name="msg_preparing_translation">Preparando traducción…</string>
@@ -172,13 +160,15 @@ jobs:
               <string name="msg_listening_plus">Escuchando audio…</string>
               <string name="msg_translation_error">No se pudo descargar el idioma</string>
               <string name="msg_capture_error">Error de captura</string>
+              <string name="msg_overlay_fail">No se pudo mostrar la ventana de subtítulos: %1$s</string>
+              <string name="msg_overlay_perm">Falta el permiso de superposición</string>
               <string name="btn_voice_on">Voz: Sí</string>
               <string name="btn_voice_off">Voz: No</string>
               <string name="btn_smaller">A−</string>
               <string name="btn_larger">A+</string>
               <string name="btn_hide">▼</string>
               <string name="btn_show">▲</string>
-              <string name="volume_label">Volumen de voz: %1$d%%</string>
+              <string name="volume_label">Volumen: %1$d%%</string>
               <string name="notif_title">Subtítulos Live está activo</string>
               <string name="notif_channel">Subtítulos Live</string>
           </resources>
@@ -188,8 +178,6 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <color name="ic_launcher_background">#0D47A1</color>
-              <color name="overlay_bg">#CC000000</color>
-              <color name="overlay_controls_bg">#EE171717</color>
           </resources>
           __EOF__
 
@@ -214,22 +202,13 @@ jobs:
           cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'__EOF__'
           <?xml version="1.0" encoding="utf-8"?>
           <vector xmlns:android="http://schemas.android.com/apk/res/android"
-              android:width="108dp"
-              android:height="108dp"
-              android:viewportWidth="108"
-              android:viewportHeight="108">
-              <path
-                  android:fillColor="#FFFFFF"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <path android:fillColor="#FFFFFF"
                   android:pathData="M30,38 L78,38 Q84,38 84,44 L84,66 Q84,72 78,72 L50,72 L38,82 L38,72 L30,72 Q24,72 24,66 L24,44 Q24,38 30,38 Z"/>
-              <path
-                  android:fillColor="#0D47A1"
-                  android:pathData="M32,46 L72,46 L72,49 L32,49 Z"/>
-              <path
-                  android:fillColor="#0D47A1"
-                  android:pathData="M32,54 L64,54 L64,57 L32,57 Z"/>
-              <path
-                  android:fillColor="#0D47A1"
-                  android:pathData="M32,62 L52,62 L52,65 L32,65 Z"/>
+              <path android:fillColor="#0D47A1" android:pathData="M32,46 L72,46 L72,49 L32,49 Z"/>
+              <path android:fillColor="#0D47A1" android:pathData="M32,54 L64,54 L64,57 L32,57 Z"/>
+              <path android:fillColor="#0D47A1" android:pathData="M32,62 L52,62 L52,65 L32,65 Z"/>
           </vector>
           __EOF__
 
@@ -272,11 +251,7 @@ jobs:
 
           import com.google.mlkit.nl.translate.TranslateLanguage
 
-          data class LanguageOption(
-              val code: String,
-              val model: String,
-              val translateCode: String
-          )
+          data class LanguageOption(val code: String, val model: String, val translateCode: String)
 
           val LANGS = linkedMapOf(
               "Español" to LanguageOption("es", "vosk-model-small-es-0.42", TranslateLanguage.SPANISH),
@@ -336,9 +311,7 @@ jobs:
 
               private val overlayLauncher = registerForActivityResult(
                   ActivityResultContracts.StartActivityForResult()
-              ) {
-                  if (Settings.canDrawOverlays(this)) continueStart()
-              }
+              ) { if (Settings.canDrawOverlays(this)) continueStart() }
 
               private val permissionLauncher = registerForActivityResult(
                   ActivityResultContracts.RequestMultiplePermissions()
@@ -346,57 +319,41 @@ jobs:
                   if (grants[Manifest.permission.RECORD_AUDIO] == true) continueStart()
               }
 
-              private fun makeSpinner(selected: Int): Spinner {
-                  return Spinner(this).apply {
-                      adapter = ArrayAdapter(
-                          this@MainActivity,
-                          android.R.layout.simple_spinner_dropdown_item,
-                          LANGS.keys.toList()
-                      )
-                      setSelection(selected.coerceIn(0, LANGS.size - 1))
-                      layoutParams = LinearLayout.LayoutParams(
-                          ViewGroup.LayoutParams.MATCH_PARENT,
-                          ViewGroup.LayoutParams.WRAP_CONTENT
-                      ).apply { topMargin = 8; bottomMargin = 24 }
-                  }
+              private fun makeSpinner(selected: Int): Spinner = Spinner(this).apply {
+                  adapter = ArrayAdapter(
+                      this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                      LANGS.keys.toList()
+                  )
+                  setSelection(selected.coerceIn(0, LANGS.size - 1))
+                  layoutParams = LinearLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT,
+                      ViewGroup.LayoutParams.WRAP_CONTENT
+                  ).apply { topMargin = 8; bottomMargin = 24 }
               }
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
-
                   val prefs = getSharedPreferences("main", MODE_PRIVATE)
-                  val savedSource = prefs.getString("source", "Inglés") ?: "Inglés"
-                  val savedTarget = prefs.getString("target", "Español") ?: "Español"
-
-                  val sourceIndex = LANGS.keys.indexOf(savedSource).coerceAtLeast(0)
-                  val targetIndex = LANGS.keys.indexOf(savedTarget).coerceAtLeast(0)
-
-                  sourceSpinner = makeSpinner(sourceIndex)
-                  targetSpinner = makeSpinner(targetIndex)
+                  sourceSpinner = makeSpinner(
+                      LANGS.keys.indexOf(prefs.getString("source", "Inglés") ?: "Inglés").coerceAtLeast(0)
+                  )
+                  targetSpinner = makeSpinner(
+                      LANGS.keys.indexOf(prefs.getString("target", "Español") ?: "Español").coerceAtLeast(0)
+                  )
 
                   val title = TextView(this).apply {
-                      text = getString(R.string.title)
-                      textSize = 26f
-                      gravity = Gravity.CENTER
-                      setPadding(0, 40, 0, 60)
+                      text = getString(R.string.title); textSize = 26f
+                      gravity = Gravity.CENTER; setPadding(0, 40, 0, 60)
                   }
-                  val sourceLabel = TextView(this).apply {
-                      text = getString(R.string.label_source)
-                      textSize = 14f
-                  }
-                  val targetLabel = TextView(this).apply {
-                      text = getString(R.string.label_target)
-                      textSize = 14f
-                  }
+                  val sourceLabel = TextView(this).apply { text = getString(R.string.label_source); textSize = 14f }
+                  val targetLabel = TextView(this).apply { text = getString(R.string.label_target); textSize = 14f }
                   val startButton = MaterialButton(this).apply {
                       text = getString(R.string.btn_start)
                       setOnClickListener { startCapture() }
                   }
                   val stopButton = MaterialButton(this).apply {
                       text = getString(R.string.btn_stop)
-                      setOnClickListener {
-                          stopService(Intent(this@MainActivity, CaptureService::class.java))
-                      }
+                      setOnClickListener { stopService(Intent(this@MainActivity, CaptureService::class.java)) }
                       layoutParams = LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT,
                           ViewGroup.LayoutParams.WRAP_CONTENT
@@ -407,54 +364,35 @@ jobs:
                       orientation = LinearLayout.VERTICAL
                       gravity = Gravity.CENTER_HORIZONTAL
                       setPadding(60, 60, 60, 60)
-                      listOf(
-                          title, sourceLabel, sourceSpinner, targetLabel, targetSpinner,
-                          startButton, stopButton
-                      ).forEach { addView(it) }
+                      listOf(title, sourceLabel, sourceSpinner, targetLabel, targetSpinner, startButton, stopButton)
+                          .forEach { addView(it) }
                   })
               }
 
-              private fun startCapture() {
-                  pendingStart = true
-                  continueStart()
-              }
+              private fun startCapture() { pendingStart = true; continueStart() }
 
               private fun continueStart() {
                   if (!pendingStart) return
-
                   if (!Settings.canDrawOverlays(this)) {
                       overlayLauncher.launch(
-                          Intent(
-                              Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                              Uri.parse("package:$packageName")
-                          )
-                      )
-                      return
+                          Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                      ); return
                   }
-
                   val audioOk = ContextCompat.checkSelfPermission(
                       this, Manifest.permission.RECORD_AUDIO
                   ) == PackageManager.PERMISSION_GRANTED
-
                   if (!audioOk) {
                       permissionLauncher.launch(
-                          arrayOf(
-                              Manifest.permission.RECORD_AUDIO,
-                              Manifest.permission.POST_NOTIFICATIONS
-                          )
-                      )
-                      return
+                          arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
+                      ); return
                   }
-
                   pendingStart = false
-
                   getSharedPreferences("main", MODE_PRIVATE).edit()
                       .putString("source", sourceSpinner.selectedItem as String)
-                      .putString("target", targetSpinner.selectedItem as String)
-                      .apply()
-
-                  val manager = getSystemService(MediaProjectionManager::class.java)
-                  captureLauncher.launch(manager.createScreenCaptureIntent())
+                      .putString("target", targetSpinner.selectedItem as String).apply()
+                  captureLauncher.launch(
+                      getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent()
+                  )
               }
           }
           __EOF__
@@ -467,7 +405,6 @@ jobs:
           import android.app.NotificationManager
           import android.app.Service
           import android.content.Intent
-          import android.content.SharedPreferences
           import android.content.pm.ServiceInfo
           import android.content.res.Configuration
           import android.graphics.Color
@@ -482,15 +419,17 @@ jobs:
           import android.os.Handler
           import android.os.IBinder
           import android.os.Looper
+          import android.provider.Settings
           import android.speech.tts.TextToSpeech
           import android.view.Gravity
           import android.view.MotionEvent
           import android.view.View
           import android.view.WindowManager
+          import android.widget.Button
           import android.widget.LinearLayout
           import android.widget.SeekBar
           import android.widget.TextView
-          import com.google.android.material.button.MaterialButton
+          import android.widget.Toast
           import com.google.mlkit.common.model.DownloadConditions
           import com.google.mlkit.nl.translate.Translation
           import com.google.mlkit.nl.translate.Translator
@@ -523,17 +462,13 @@ jobs:
 
               private var overlay: LinearLayout? = null
               private var subtitleView: TextView? = null
-              private var controlsGroup: LinearLayout? = null
-              private var toggleButton: MaterialButton? = null
               private var windowParams: WindowManager.LayoutParams? = null
-              private var prefs: SharedPreferences? = null
 
               private var translator: Translator? = null
               private var modelReady = false
 
               private var tts: TextToSpeech? = null
               private var ttsReady = false
-              private var ttsLocale: Locale? = null
 
               private var speechEnabled = true
               private var speechVolume = 100
@@ -541,16 +476,13 @@ jobs:
               private var lastRecognized = ""
               private var sizeIndex = 2
               private var lastUiUpdate = 0L
-              private var currentStatus = ""
               private val sizes = floatArrayOf(14f, 18f, 22f, 28f, 36f, 46f)
 
               override fun onBind(intent: Intent?): IBinder? = null
 
               override fun onInit(status: Int) {
                   ttsReady = status == TextToSpeech.SUCCESS
-                  if (ttsReady) {
-                      tts?.language = ttsLocale ?: targetLocale
-                  }
+                  if (ttsReady) tts?.language = targetLocale
               }
 
               override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -564,33 +496,26 @@ jobs:
                   val target = LANGS[targetName] ?: LANGS.values.first()
                   targetLocale = localeFor(target.code)
 
-                  lastRecognized = ""
-                  modelReady = false
-                  speechEnabled = true
-                  speechVolume = 100
+                  lastRecognized = ""; modelReady = false
+                  speechEnabled = true; speechVolume = 100
                   lastUiUpdate = 0L
-                  currentStatus = ""
 
                   startForegroundNotification()
 
                   val data = if (Build.VERSION.SDK_INT >= 33) {
                       intent.getParcelableExtra("projectionData", Intent::class.java)
                   } else {
-                      @Suppress("DEPRECATION")
-                      intent.getParcelableExtra<Intent>("projectionData")
+                      @Suppress("DEPRECATION") intent.getParcelableExtra<Intent>("projectionData")
                   }
-                  if (data == null) {
-                      stopSelf()
-                      return START_NOT_STICKY
-                  }
+                  if (data == null) { stopSelf(); return START_NOT_STICKY }
 
-                  val manager = getSystemService(MediaProjectionManager::class.java)
-                  projection = manager.getMediaProjection(intent.getIntExtra("resultCode", 0), data)
+                  projection = getSystemService(MediaProjectionManager::class.java)
+                      .getMediaProjection(intent.getIntExtra("resultCode", 0), data)
                   projection?.registerCallback(object : MediaProjection.Callback() {
                       override fun onStop() { stopSelf() }
                   }, mainHandler)
 
-                  ensureTts(targetLocale)
+                  ensureTts()
                   createOverlay()
 
                   if (source.translateCode == target.translateCode) {
@@ -599,17 +524,16 @@ jobs:
                       translator = Translation.getClient(
                           TranslatorOptions.Builder()
                               .setSourceLanguage(source.translateCode)
-                              .setTargetLanguage(target.translateCode)
-                              .build()
+                              .setTargetLanguage(target.translateCode).build()
                       )
-                      showStatus(getString(R.string.msg_preparing_translation))
+                      showSubtitle(getString(R.string.msg_preparing_translation))
                       translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
                           ?.addOnSuccessListener {
                               modelReady = true
-                              showStatus(getString(R.string.msg_listening_plus))
+                              showSubtitle(getString(R.string.msg_listening_plus))
                           }
                           ?.addOnFailureListener {
-                              showStatus(getString(R.string.msg_translation_error) + ": " + (it.message ?: ""))
+                              showSubtitle(getString(R.string.msg_translation_error) + ": " + (it.message ?: ""))
                           }
                   }
 
@@ -625,23 +549,24 @@ jobs:
                       if (!running.get()) return
                       recognizer = Recognizer(model, 16000.0f)
 
-                      val config = AudioPlaybackCaptureConfigurationFactory.build(projection!!)
+                      val config = android.media.AudioPlaybackCaptureConfiguration
+                          .Builder(projection!!)
+                          .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                          .addMatchingUsage(AudioAttributes.USAGE_GAME).build()
                       val format = AudioFormat.Builder()
                           .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                           .setSampleRate(16000)
-                          .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
-                          .build()
-                      val minBuffer = AudioRecord.getMinBufferSize(
+                          .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
+                      val minBuf = AudioRecord.getMinBufferSize(
                           16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
                       )
                       recorder = AudioRecord.Builder()
                           .setAudioPlaybackCaptureConfig(config)
                           .setAudioFormat(format)
-                          .setBufferSizeInBytes(maxOf(minBuffer * 2, 32768))
-                          .build()
+                          .setBufferSizeInBytes(maxOf(minBuf * 2, 32768)).build()
                       audioRecord = recorder
                       recorder.startRecording()
-                      showStatus(getString(R.string.msg_listening))
+                      showSubtitle(getString(R.string.msg_listening))
 
                       val buffer = ByteArray(4096)
                       while (running.get() && scope.isActive) {
@@ -653,17 +578,14 @@ jobs:
                           )
                           val key = if (isFinal) "text" else "partial"
                           val recognized = json.optString(key).trim()
-
-                          if (recognized.isNotBlank()) {
-                              if (isFinal || recognized != lastRecognized) {
-                                  lastRecognized = if (isFinal) "" else recognized
-                                  processText(recognized, isFinal)
-                              }
+                          if (recognized.isNotBlank() && (isFinal || recognized != lastRecognized)) {
+                              lastRecognized = if (isFinal) "" else recognized
+                              processText(recognized, isFinal)
                           }
                       }
-                  } catch (error: Exception) {
-                      if (running.get()) showStatus(
-                          getString(R.string.msg_capture_error) + ": " + (error.localizedMessage ?: "?")
+                  } catch (e: Exception) {
+                      if (running.get()) showSubtitle(
+                          getString(R.string.msg_capture_error) + ": " + (e.localizedMessage ?: "?")
                       )
                   } finally {
                       try { recorder?.stop() } catch (_: Exception) {}
@@ -679,33 +601,24 @@ jobs:
                       if (isFinal) speak(text)
                       return
                   }
-                  tr.translate(text)
-                      .addOnSuccessListener { translated ->
-                          if (running.get()) {
-                              showSubtitleThrottled("$text\n$translated", isFinal)
-                              if (isFinal) speak(translated)
-                          }
+                  tr.translate(text).addOnSuccessListener { translated ->
+                      if (running.get()) {
+                          showSubtitleThrottled("$text\n$translated", isFinal)
+                          if (isFinal) speak(translated)
                       }
-                      .addOnFailureListener {
-                          showSubtitleThrottled("$text\n(Error de traducción)", true)
-                      }
+                  }.addOnFailureListener {
+                      showSubtitleThrottled("$text\n(Error de traducción)", true)
+                  }
               }
 
               private fun showSubtitleThrottled(text: String, force: Boolean) {
                   val now = System.currentTimeMillis()
-                  if (force || now - lastUiUpdate > 120) {
-                      lastUiUpdate = now
-                      showSubtitle(text)
-                  }
+                  if (force || now - lastUiUpdate > 120) { lastUiUpdate = now; showSubtitle(text) }
               }
 
-              private fun ensureTts(locale: Locale) {
-                  if (tts == null || ttsLocale != locale) {
-                      try { tts?.shutdown() } catch (_: Exception) {}
-                      ttsLocale = locale
-                      ttsReady = false
-                      tts = TextToSpeech(this, this)
-                  }
+              private fun ensureTts() {
+                  if (tts == null) { ttsReady = false; tts = TextToSpeech(this, this) }
+                  else if (ttsReady) tts?.language = targetLocale
               }
 
               private fun speak(text: String) {
@@ -725,26 +638,25 @@ jobs:
               private fun startForegroundNotification() {
                   val nm = getSystemService(NotificationManager::class.java)
                   nm.createNotificationChannel(
-                      NotificationChannel(
-                          "subtitles_live",
-                          getString(R.string.notif_channel),
-                          NotificationManager.IMPORTANCE_LOW
-                      )
+                      NotificationChannel("subtitles_live",
+                          getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW)
                   )
-                  val notification = Notification.Builder(this, "subtitles_live")
+                  val notif = Notification.Builder(this, "subtitles_live")
                       .setContentTitle(getString(R.string.notif_title))
-                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-                      .build()
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now).build()
                   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-                  } else {
-                      startForeground(1, notification)
-                  }
+                      startForeground(1, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+                  } else startForeground(1, notif)
               }
 
               private fun createOverlay() {
+                  // FIX #1: verificar permiso de superposición DENTRO del service
+                  if (!Settings.canDrawOverlays(this)) {
+                      showToast(getString(R.string.msg_overlay_perm))
+                      return
+                  }
+
                   val p = getSharedPreferences("overlay", MODE_PRIVATE)
-                  prefs = p
                   sizeIndex = p.getInt("size", 2).coerceIn(0, sizes.lastIndex)
                   val metrics = resources.displayMetrics
                   val wm = getSystemService(WindowManager::class.java)
@@ -755,18 +667,19 @@ jobs:
                       gravity = Gravity.CENTER
                       setBackgroundColor(0xCC000000.toInt())
                       setPadding(20, 14, 20, 14)
-                      text = currentStatus.ifBlank { getString(R.string.msg_preparing) }
+                      text = getString(R.string.msg_preparing)
                   }
 
-                  val smaller = MaterialButton(this).apply {
+                  // FIX #2: usar Button normal (NO MaterialButton) en el Service
+                  val smaller = Button(this).apply {
                       text = getString(R.string.btn_smaller)
                       setOnClickListener { changeSize(sizeIndex - 1) }
                   }
-                  val larger = MaterialButton(this).apply {
+                  val larger = Button(this).apply {
                       text = getString(R.string.btn_larger)
                       setOnClickListener { changeSize(sizeIndex + 1) }
                   }
-                  val voice = MaterialButton(this).apply {
+                  val voice = Button(this).apply {
                       text = getString(R.string.btn_voice_on)
                       setOnClickListener {
                           speechEnabled = !speechEnabled
@@ -776,20 +689,18 @@ jobs:
                           if (!speechEnabled) try { tts?.stop() } catch (_: Exception) {}
                       }
                   }
-                  val stop = MaterialButton(this).apply {
+                  val stop = Button(this).apply {
                       text = getString(R.string.btn_stop)
                       setOnClickListener { stopSelf() }
                   }
 
                   val volumeLabel = TextView(this).apply {
                       text = getString(R.string.volume_label, 100)
-                      setTextColor(Color.WHITE)
-                      gravity = Gravity.CENTER
+                      setTextColor(Color.WHITE); gravity = Gravity.CENTER
                       setPadding(4, 4, 4, 4)
                   }
                   val volume = SeekBar(this).apply {
-                      max = 100
-                      progress = 100
+                      max = 100; progress = 100
                       setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                           override fun onProgressChanged(sb: SeekBar?, pr: Int, fromUser: Boolean) {
                               speechVolume = pr
@@ -809,12 +720,10 @@ jobs:
 
                   val controls = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      addView(buttonRow)
-                      addView(volumeLabel)
-                      addView(volume)
+                      addView(buttonRow); addView(volumeLabel); addView(volume)
                   }
 
-                  val toggle = MaterialButton(this).apply {
+                  val toggle = Button(this).apply {
                       text = getString(R.string.btn_hide)
                       setOnClickListener {
                           val visible = controls.visibility == View.VISIBLE
@@ -826,9 +735,7 @@ jobs:
                   val container = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setBackgroundColor(0xCC000000.toInt())
-                      addView(subtitleTextView)
-                      addView(toggle)
-                      addView(controls)
+                      addView(subtitleTextView); addView(toggle); addView(controls)
                   }
 
                   val params = WindowManager.LayoutParams(
@@ -840,7 +747,7 @@ jobs:
                   ).apply {
                       gravity = Gravity.TOP or Gravity.START
                       x = p.getInt("x", (metrics.widthPixels * 0.03f).toInt())
-                      y = p.getInt("y", metrics.heightPixels * 2 / 3)
+                      y = p.getInt("y", metrics.heightPixels / 2)
                   }
 
                   var downX = 0f; var downY = 0f; var startX = 0; var startY = 0
@@ -848,8 +755,7 @@ jobs:
                       when (event.action) {
                           MotionEvent.ACTION_DOWN -> {
                               downX = event.rawX; downY = event.rawY
-                              startX = params.x; startY = params.y
-                              true
+                              startX = params.x; startY = params.y; true
                           }
                           MotionEvent.ACTION_MOVE -> {
                               params.x = startX + (event.rawX - downX).toInt()
@@ -858,48 +764,50 @@ jobs:
                               true
                           }
                           MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                              p.edit().putInt("x", params.x).putInt("y", params.y).apply()
-                              true
+                              p.edit().putInt("x", params.x).putInt("y", params.y).apply(); true
                           }
                           else -> false
                       }
                   }
 
-                  try { wm.addView(container, params) } catch (_: Exception) {}
-                  overlay = container
-                  subtitleView = subtitleTextView
-                  controlsGroup = controls
-                  toggleButton = toggle
-                  windowParams = params
+                  // FIX #3: no swallow silencioso, reportar si falla
+                  try {
+                      wm.addView(container, params)
+                      overlay = container
+                      subtitleView = subtitleTextView
+                      windowParams = params
+                  } catch (e: Exception) {
+                      showToast(getString(R.string.msg_overlay_fail, e.message ?: "?"))
+                  }
+              }
+
+              private fun showToast(msg: String) {
+                  mainHandler.post {
+                      try { Toast.makeText(this@CaptureService, msg, Toast.LENGTH_LONG).show() }
+                      catch (_: Exception) {}
+                  }
               }
 
               private fun changeSize(newSize: Int) {
                   sizeIndex = newSize.coerceIn(0, sizes.lastIndex)
                   subtitleView?.textSize = sizes[sizeIndex]
-                  prefs?.edit()?.putInt("size", sizeIndex)?.apply()
+                  getSharedPreferences("overlay", MODE_PRIVATE).edit().putInt("size", sizeIndex).apply()
               }
 
               private fun showSubtitle(text: String) {
-                  currentStatus = text
                   mainHandler.post { if (running.get()) subtitleView?.text = text }
               }
-
-              private fun showStatus(text: String) = showSubtitle(text)
 
               private fun loadModel(languageCode: String, modelName: String): Model {
                   val dir = File(filesDir, "vosk-$languageCode")
                   if (!File(dir, "am").isDirectory) downloadModel(dir, modelName)
-                  return try {
-                      Model(dir.absolutePath)
-                  } catch (_: Exception) {
-                      dir.deleteRecursively()
-                      downloadModel(dir, modelName)
-                      Model(dir.absolutePath)
+                  return try { Model(dir.absolutePath) } catch (_: Exception) {
+                      dir.deleteRecursively(); downloadModel(dir, modelName); Model(dir.absolutePath)
                   }
               }
 
               private fun downloadModel(destination: File, modelName: String) {
-                  showStatus(getString(R.string.msg_downloading_model))
+                  showSubtitle(getString(R.string.msg_downloading_model))
                   val tempDir = File(filesDir, "tmp-${destination.name}")
                   tempDir.deleteRecursively(); tempDir.mkdirs()
                   val zipFile = File(cacheDir, "${destination.name}.zip")
@@ -911,50 +819,39 @@ jobs:
                       while (entry != null) {
                           val out = File(tempDir, entry.name)
                           if (!out.canonicalPath.startsWith(tempDir.canonicalPath + File.separator)) {
-                              throw SecurityException("Archivo de modelo no válido")
+                              throw SecurityException("Zip unsafe")
                           }
                           if (entry.isDirectory) out.mkdirs()
-                          else {
-                              out.parentFile?.mkdirs()
-                              out.outputStream().use { zip.copyTo(it) }
-                          }
-                          zip.closeEntry()
-                          entry = zip.nextEntry
+                          else { out.parentFile?.mkdirs(); out.outputStream().use { zip.copyTo(it) } }
+                          zip.closeEntry(); entry = zip.nextEntry
                       }
                   }
                   zipFile.delete()
-                  val modelRoot = tempDir.walkTopDown()
-                      .firstOrNull { File(it, "am").isDirectory }
+                  val root = tempDir.walkTopDown().firstOrNull { File(it, "am").isDirectory }
                       ?: throw IllegalStateException("Modelo incompleto")
                   destination.deleteRecursively()
-                  if (!modelRoot.renameTo(destination)) {
-                      modelRoot.copyRecursively(destination, overwrite = true)
-                  }
+                  if (!root.renameTo(destination)) root.copyRecursively(destination, overwrite = true)
                   tempDir.deleteRecursively()
               }
 
               override fun onConfigurationChanged(newConfig: Configuration) {
                   super.onConfigurationChanged(newConfig)
-                  overlay?.let { view ->
-                      try {
-                          val metrics = resources.displayMetrics
-                          windowParams?.let { p ->
-                              p.width = (metrics.widthPixels * 0.94f).toInt()
-                              getSystemService(WindowManager::class.java).updateViewLayout(view, p)
-                          }
-                      } catch (_: Exception) {}
-                  }
+                  try {
+                      val m = resources.displayMetrics
+                      overlay?.let { v -> windowParams?.let { p ->
+                          p.width = (m.widthPixels * 0.94f).toInt()
+                          getSystemService(WindowManager::class.java).updateViewLayout(v, p)
+                      } }
+                  } catch (_: Exception) {}
               }
 
               override fun onTaskRemoved(rootIntent: Intent?) {
-                  stopSelf()
-                  super.onTaskRemoved(rootIntent)
+                  stopSelf(); super.onTaskRemoved(rootIntent)
               }
 
               private fun cleanup() {
                   running.set(false)
-                  captureJob?.cancel()
-                  captureJob = null
+                  captureJob?.cancel(); captureJob = null
                   try { audioRecord?.stop() } catch (_: Exception) {}
                   try { audioRecord?.release() } catch (_: Exception) {}
                   audioRecord = null
@@ -964,31 +861,15 @@ jobs:
                   translator = null
                   try { tts?.stop() } catch (_: Exception) {}
                   try { tts?.shutdown() } catch (_: Exception) {}
-                  tts = null
-                  ttsReady = false
-                  ttsLocale = null
+                  tts = null; ttsReady = false
                   try {
                       overlay?.let { getSystemService(WindowManager::class.java).removeView(it) }
                   } catch (_: Exception) {}
-                  overlay = null
-                  subtitleView = null
-                  controlsGroup = null
-                  toggleButton = null
-                  windowParams = null
+                  overlay = null; subtitleView = null; windowParams = null
               }
 
               override fun onDestroy() {
-                  cleanup()
-                  scope.cancel()
-                  super.onDestroy()
-              }
-
-              private object AudioPlaybackCaptureConfigurationFactory {
-                  fun build(projection: MediaProjection) =
-                      android.media.AudioPlaybackCaptureConfiguration.Builder(projection)
-                          .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                          .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                          .build()
+                  cleanup(); scope.cancel(); super.onDestroy()
               }
           }
           __EOF__
@@ -1002,12 +883,7 @@ jobs:
         env:
           VERSION_CODE: ${{ github.run_number }}
           VERSION_NAME: "2.2.${{ github.run_number }}"
-        run: |
-          gradle assembleRelease --stacktrace
-
-      - name: Verificar firma
-        run: |
-          apksigner verify --verbose app/build/outputs/apk/release/app-release.apk || true
+        run: gradle assembleRelease --stacktrace
 
       - name: Publicar APK
         uses: actions/upload-artifact@v4
