@@ -24,6 +24,14 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # "tools" is obsolete in current Android SDK command-line tools.
+          packages: 'platform-tools;platforms;android-34;build-tools;34.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
 
       - name: Create Android project
         shell: bash
@@ -694,9 +702,6 @@ jobs:
               }
           }
           EOF
-
-      - name: Install Android SDK packages
-        run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
       - name: Build debug APK
         run: |
