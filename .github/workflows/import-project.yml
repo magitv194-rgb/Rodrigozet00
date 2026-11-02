@@ -79,7 +79,7 @@ jobs:
                   minSdk = 29
                   targetSdk = 34
                   versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-                  versionName = System.getenv("VERSION_NAME") ?: "3.0.0"
+                  versionName = System.getenv("VERSION_NAME") ?: "3.0.1"
                   resourceConfigurations += listOf("es", "en")
               }
 
@@ -130,7 +130,7 @@ jobs:
               <string name="msg_preparing">Preparando subtítulos…</string>
               <string name="msg_downloading_model">Descargando modelo…</string>
               <string name="msg_preparing_translation">Preparando traducción…</string>
-              <string name="msg_listening">Escuchando audio interno…</string>
+              <string name="msg_listening">Escuchando audio… (Nivel: %1$d)</string>
               <string name="msg_listening_plus">Escuchando audio…</string>
               <string name="msg_translation_error">Error de traducción</string>
               <string name="msg_capture_error">Error de captura</string>
@@ -290,7 +290,7 @@ jobs:
                   set(v) = prefs.edit().putString("deepl_api_key", v).apply()
 
               var audioFilter: String
-                  get() = prefs.getString("audio_filter", "media") ?: "media"
+                  get() = prefs.getString("audio_filter", "all") ?: "all"
                   set(v) = prefs.edit().putString("audio_filter", v).apply()
 
               var voiceEnabled: Boolean
@@ -612,14 +612,12 @@ jobs:
                       setPadding(0, 0, 0, 32)
                   })
 
-                  // ---- Reconocimiento ----
                   section("Reconocimiento de voz")
                   root.addView(switchRow(
                       "Modelo grande (mucho más preciso, descarga ~1.5 GB)",
                       settings.useLargeModel
                   ) { settings.useLargeModel = it })
 
-                  // ---- Traducción ----
                   section("Traducción")
                   val trGroup = RadioGroup(this)
                   val mlkitRadio = RadioButton(this).apply { text = "ML Kit (offline, gratis, ilimitado)"; id = 1 }
@@ -650,24 +648,22 @@ jobs:
                       })
                   }
 
-                  // ---- Audio ----
                   section("Audio a capturar")
                   val audioGroup = RadioGroup(this)
-                  val mediaRadio = RadioButton(this).apply { text = "Solo multimedia (música, vídeos, apps)"; id = 1 }
+                  val mediaRadio = RadioButton(this).apply { text = "Solo multimedia (música, vídeos)"; id = 1 }
                   val gamesRadio = RadioButton(this).apply { text = "Multimedia + juegos"; id = 2 }
                   val allRadio = RadioButton(this).apply { text = "Todo (incluye notificaciones)"; id = 3 }
                   audioGroup.addView(mediaRadio); audioGroup.addView(gamesRadio); audioGroup.addView(allRadio)
                   when (settings.audioFilter) {
+                      "media" -> mediaRadio.isChecked = true
                       "games" -> gamesRadio.isChecked = true
-                      "all" -> allRadio.isChecked = true
-                      else -> mediaRadio.isChecked = true
+                      else -> allRadio.isChecked = true
                   }
                   audioGroup.setOnCheckedChangeListener { _, id ->
-                      settings.audioFilter = when (id) { 2 -> "games"; 3 -> "all"; else -> "media" }
+                      settings.audioFilter = when (id) { 1 -> "media"; 2 -> "games"; else -> "all" }
                   }
                   root.addView(audioGroup)
 
-                  // ---- Voz ----
                   section("Voz (TTS)")
                   root.addView(switchRow("Leer en voz alta", settings.voiceEnabled) {
                       settings.voiceEnabled = it
@@ -679,7 +675,6 @@ jobs:
                       settings.ttsVolume = v.toInt()
                   })
 
-                  // ---- Subtítulos ----
                   section("Subtítulos")
                   val modeGroup = RadioGroup(this)
                   val bothRadio = RadioButton(this).apply { text = "Original + traducción"; id = 1 }
@@ -699,10 +694,9 @@ jobs:
                       settings.subtitleSizeIndex = v.toInt()
                   })
 
-                  // ---- Tema ----
                   section("Tema")
                   val themeGroup = RadioGroup(this)
-                  val autoRadio = RadioButton(this).apply { text = "Automático (sigue el sistema)"; id = 1 }
+                  val autoRadio = RadioButton(this).apply { text = "Automático"; id = 1 }
                   val lightRadio = RadioButton(this).apply { text = "Claro"; id = 2 }
                   val darkRadio = RadioButton(this).apply { text = "Oscuro"; id = 3 }
                   themeGroup.addView(autoRadio); themeGroup.addView(lightRadio); themeGroup.addView(darkRadio)
@@ -717,20 +711,18 @@ jobs:
                   }
                   root.addView(themeGroup)
 
-                  // ---- Exportación ----
                   section("Exportación")
                   root.addView(switchRow("Guardar .srt automáticamente al detener", settings.autoExportSrt) {
                       settings.autoExportSrt = it
                   })
 
-                  // ---- Reset ----
                   root.addView(MaterialButton(this).apply {
-                      text = "Restablecer valores por defecto"
+                      text = "Restablecer valores"
                       setOnClickListener {
                           settings.useLargeModel = false
                           settings.translatorMode = "mlkit"
                           settings.deeplApiKey = ""
-                          settings.audioFilter = "media"
+                          settings.audioFilter = "all"
                           settings.voiceEnabled = true
                           settings.ttsSpeed = 1.0f
                           settings.ttsVolume = 100
@@ -937,7 +929,6 @@ jobs:
                   if (tts == null) tts = TextToSpeech(this, this) else applyTtsSettings()
                   createOverlay()
 
-                  // Configurar traductor
                   if (source.translateCode == target.translateCode) {
                       modelReady = true
                   } else if (settings.translatorMode == "deepl" && settings.deeplApiKey.isNotBlank()) {
@@ -967,18 +958,11 @@ jobs:
 
               private fun buildAudioConfig(): android.media.AudioPlaybackCaptureConfiguration {
                   val b = android.media.AudioPlaybackCaptureConfiguration.Builder(projection!!)
-                  when (settings.audioFilter) {
-                      "all" -> {
-                          b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                          b.addMatchingUsage(AudioAttributes.USAGE_GAME)
-                          b.addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                      }
-                      "games" -> {
-                          b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                          b.addMatchingUsage(AudioAttributes.USAGE_GAME)
-                      }
-                      else -> b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                  }
+                  // Forzamos todas las etiquetas de audio para evitar problemas con reproductores
+                  b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                  b.addMatchingUsage(AudioAttributes.USAGE_GAME)
+                  b.addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                  b.addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                   return b.build()
               }
 
@@ -1002,12 +986,27 @@ jobs:
                           .setBufferSizeInBytes(maxOf(minBuf * 2, 32768)).build()
                       audioRecord = recorder
                       recorder.startRecording()
-                      showSubtitle(getString(R.string.msg_listening))
 
                       val buffer = ByteArray(4096)
                       while (running.get() && scope.isActive) {
                           val count = recorder.read(buffer, 0, buffer.size)
                           if (count <= 0) continue
+
+                          // Medidor de nivel de audio
+                          var maxAmplitude = 0
+                          for (i in 0 until count) {
+                              val abs = Math.abs(buffer[i].toInt())
+                              if (abs > maxAmplitude) maxAmplitude = abs
+                          }
+                          if (System.currentTimeMillis() - lastUiUpdate > 500) {
+                              lastUiUpdate = System.currentTimeMillis()
+                              mainHandler.post {
+                                  if (subtitleView?.text?.contains("Nivel") == true || subtitleView?.text?.contains("Escuchando") == true) {
+                                      subtitleView?.text = "Escuchando audio… (Nivel: $maxAmplitude)"
+                                  }
+                              }
+                          }
+
                           val isFinal = recognizer.acceptWaveForm(buffer, count)
                           val json = JSONObject(if (isFinal) recognizer.result else recognizer.partialResult)
                           val key = if (isFinal) "text" else "partial"
@@ -1029,7 +1028,6 @@ jobs:
               private fun processText(text: String, isFinal: Boolean, source: LanguageOption) {
                   val target = LANGS[settings.targetLang] ?: LANGS.values.first()
 
-                  // Sin traducción necesaria
                   if (source.code == target.code) {
                       showSubtitleThrottled(formatSubtitle(text, null), isFinal)
                       if (isFinal) { recordEntry(text, null); speak(text) }
@@ -1099,235 +1097,4 @@ jobs:
                   val params = android.os.Bundle().apply {
                       putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, settings.ttsVolume / 100f)
                   }
-                  tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "sub-${System.currentTimeMillis()}")
-              }
-
-              private fun startForegroundNotification() {
-                  val nm = getSystemService(NotificationManager::class.java)
-                  nm.createNotificationChannel(NotificationChannel(
-                      "subtitles_live", getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW))
-                  val notif = Notification.Builder(this, "subtitles_live")
-                      .setContentTitle(getString(R.string.notif_title))
-                      .setSmallIcon(android.R.drawable.ic_btn_speak_now).build()
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                      startForeground(1, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-                  } else startForeground(1, notif)
-              }
-
-              private fun createOverlay() {
-                  if (!Settings.canDrawOverlays(this)) { showToast(getString(R.string.msg_overlay_perm)); return }
-                  val metrics = resources.displayMetrics
-                  val wm = getSystemService(WindowManager::class.java)
-
-                  val subtitleTextView = TextView(this).apply {
-                      setTextColor(Color.WHITE)
-                      textSize = sizes[settings.subtitleSizeIndex.coerceIn(0, sizes.lastIndex)]
-                      gravity = Gravity.CENTER
-                      setBackgroundColor(0xCC000000.toInt())
-                      setPadding(20, 14, 20, 14)
-                      text = getString(R.string.msg_preparing)
-                  }
-
-                  val smaller = Button(this).apply {
-                      text = getString(R.string.btn_smaller)
-                      setOnClickListener {
-                          settings.subtitleSizeIndex = (settings.subtitleSizeIndex - 1).coerceAtLeast(0)
-                          subtitleTextView.textSize = sizes[settings.subtitleSizeIndex]
-                      }
-                  }
-                  val larger = Button(this).apply {
-                      text = getString(R.string.btn_larger)
-                      setOnClickListener {
-                          settings.subtitleSizeIndex = (settings.subtitleSizeIndex + 1).coerceAtMost(sizes.lastIndex)
-                          subtitleTextView.textSize = sizes[settings.subtitleSizeIndex]
-                      }
-                  }
-                  val voice = Button(this).apply {
-                      text = if (settings.voiceEnabled) getString(R.string.btn_voice_on) else getString(R.string.btn_voice_off)
-                      setOnClickListener {
-                          settings.voiceEnabled = !settings.voiceEnabled
-                          text = if (settings.voiceEnabled) getString(R.string.btn_voice_on) else getString(R.string.btn_voice_off)
-                          if (!settings.voiceEnabled) try { tts?.stop() } catch (_: Exception) {}
-                      }
-                  }
-                  val stop = Button(this).apply {
-                      text = getString(R.string.btn_stop)
-                      setOnClickListener { stopSelf() }
-                  }
-
-                  val buttonRow = LinearLayout(this).apply {
-                      orientation = LinearLayout.HORIZONTAL
-                      gravity = Gravity.CENTER
-                      setBackgroundColor(0xEE171717.toInt())
-                      addView(smaller); addView(larger); addView(voice); addView(stop)
-                  }
-
-                  val toggle = Button(this).apply {
-                      text = getString(R.string.btn_hide)
-                      setOnClickListener {
-                          val visible = buttonRow.visibility == View.VISIBLE
-                          buttonRow.visibility = if (visible) View.GONE else View.VISIBLE
-                          text = getString(if (visible) R.string.btn_show else R.string.btn_hide)
-                      }
-                  }
-
-                  val container = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      setBackgroundColor(0xCC000000.toInt())
-                      addView(subtitleTextView); addView(toggle); addView(buttonRow)
-                  }
-
-                  val params = WindowManager.LayoutParams(
-                      (metrics.widthPixels * 0.94f).toInt(),
-                      WindowManager.LayoutParams.WRAP_CONTENT,
-                      WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                      PixelFormat.TRANSLUCENT
-                  ).apply {
-                      gravity = Gravity.TOP or Gravity.START
-                      x = if (settings.overlayX < 0) (metrics.widthPixels * 0.03f).toInt() else settings.overlayX
-                      y = if (settings.overlayY < 0) metrics.heightPixels / 2 else settings.overlayY
-                  }
-
-                  var downX = 0f; var downY = 0f; var startX = 0; var startY = 0
-                  subtitleTextView.setOnTouchListener { _, event ->
-                      when (event.action) {
-                          MotionEvent.ACTION_DOWN -> {
-                              downX = event.rawX; downY = event.rawY
-                              startX = params.x; startY = params.y; true
-                          }
-                          MotionEvent.ACTION_MOVE -> {
-                              params.x = startX + (event.rawX - downX).toInt()
-                              params.y = startY + (event.rawY - downY).toInt()
-                              try { wm.updateViewLayout(container, params) } catch (_: Exception) {}
-                              true
-                          }
-                          MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                              settings.overlayX = params.x; settings.overlayY = params.y; true
-                          }
-                          else -> false
-                      }
-                  }
-
-                  try {
-                      wm.addView(container, params)
-                      overlay = container; subtitleView = subtitleTextView; windowParams = params
-                  } catch (e: Exception) {
-                      showToast(getString(R.string.msg_overlay_fail, e.message ?: "?"))
-                  }
-              }
-
-              private fun showToast(msg: String) {
-                  mainHandler.post {
-                      try { Toast.makeText(this@CaptureService, msg, Toast.LENGTH_LONG).show() } catch (_: Exception) {}
-                  }
-              }
-
-              private fun showSubtitle(text: String) {
-                  mainHandler.post { if (running.get()) subtitleView?.text = text }
-              }
-
-              private fun loadModel(source: LanguageOption): Model {
-                  val dir = File(filesDir, "vosk-${source.code}${if (settings.useLargeModel) "-large" else ""}")
-                  val modelName = if (settings.useLargeModel) source.largeModel else source.smallModel
-                  if (!File(dir, "am").isDirectory) downloadModel(dir, modelName)
-                  return try { Model(dir.absolutePath) } catch (_: Exception) {
-                      dir.deleteRecursively(); downloadModel(dir, modelName); Model(dir.absolutePath)
-                  }
-              }
-
-              private fun downloadModel(destination: File, modelName: String) {
-                  showSubtitle(getString(R.string.msg_downloading_model))
-                  val tempDir = File(filesDir, "tmp-${destination.name}")
-                  tempDir.deleteRecursively(); tempDir.mkdirs()
-                  val zipFile = File(cacheDir, "${destination.name}.zip")
-                  URL("https://alphacephei.com/vosk/models/$modelName.zip").openStream().use { input ->
-                      zipFile.outputStream().use { output -> input.copyTo(output) }
-                  }
-                  ZipInputStream(zipFile.inputStream()).use { zip ->
-                      var entry = zip.nextEntry
-                      while (entry != null) {
-                          val out = File(tempDir, entry.name)
-                          if (!out.canonicalPath.startsWith(tempDir.canonicalPath + File.separator)) {
-                              throw SecurityException("Zip inseguro")
-                          }
-                          if (entry.isDirectory) out.mkdirs()
-                          else { out.parentFile?.mkdirs(); out.outputStream().use { zip.copyTo(it) } }
-                          zip.closeEntry(); entry = zip.nextEntry
-                      }
-                  }
-                  zipFile.delete()
-                  val root = tempDir.walkTopDown().firstOrNull { File(it, "am").isDirectory }
-                      ?: throw IllegalStateException("Modelo incompleto")
-                  destination.deleteRecursively()
-                  if (!root.renameTo(destination)) root.copyRecursively(destination, overwrite = true)
-                  tempDir.deleteRecursively()
-              }
-
-              override fun onConfigurationChanged(newConfig: Configuration) {
-                  super.onConfigurationChanged(newConfig)
-                  try {
-                      val m = resources.displayMetrics
-                      overlay?.let { v -> windowParams?.let { p ->
-                          p.width = (m.widthPixels * 0.94f).toInt()
-                          getSystemService(WindowManager::class.java).updateViewLayout(v, p)
-                      } }
-                  } catch (_: Exception) {}
-              }
-
-              override fun onTaskRemoved(rootIntent: Intent?) {
-                  stopSelf(); super.onTaskRemoved(rootIntent)
-              }
-
-              private fun cleanup() {
-                  running.set(false)
-                  captureJob?.cancel(); captureJob = null
-                  try { audioRecord?.stop() } catch (_: Exception) {}
-                  try { audioRecord?.release() } catch (_: Exception) {}
-                  audioRecord = null
-                  try { projection?.stop() } catch (_: Exception) {}
-                  projection = null
-                  try { translator?.close() } catch (_: Exception) {}
-                  translator = null
-                  deepL = null
-                  try { tts?.stop() } catch (_: Exception) {}
-                  try { tts?.shutdown() } catch (_: Exception) {}
-                  tts = null; ttsReady = false
-                  try {
-                      overlay?.let { getSystemService(WindowManager::class.java).removeView(it) }
-                  } catch (_: Exception) {}
-                  overlay = null; subtitleView = null; windowParams = null
-              }
-
-              override fun onDestroy() {
-                  // Export SRT si está activado
-                  try {
-                      if (::settings.isInitialized && settings.autoExportSrt && subtitleLog.isNotEmpty()) {
-                          val path = SrtExporter.save(this, subtitleLog)
-                          showToast(getString(R.string.msg_srt_saved, path))
-                      }
-                  } catch (_: Exception) {}
-                  cleanup()
-                  scope.cancel()
-                  super.onDestroy()
-              }
-          }
-          __EOF__
-
-      - name: Configurar Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
-
-      - name: Compilar APK (release con R8)
-        env:
-          VERSION_CODE: ${{ github.run_number }}
-          VERSION_NAME: "3.0.${{ github.run_number }}"
-        run: gradle assembleRelease --stacktrace
-
-      - name: Publicar APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: SubtitulosLive-apk-${{ github.run_number }}
-          path: app/build/outputs/apk/release/app-release.apk
-          if-no-files-found: error
+                  tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "sub-${System
