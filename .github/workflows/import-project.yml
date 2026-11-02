@@ -22,43 +22,16 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
 
-      - name: Cachear keystore de firma
-        uses: actions/cache@v4
-        with:
-          path: ~/.android/release.keystore
-          key: keystore-v1
-
-      - name: Generar keystore si no existe
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.android
-          if [ ! -f ~/.android/release.keystore ]; then
-            keytool -genkeypair -v \
-              -keystore ~/.android/release.keystore \
-              -alias subtitulos \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass subtitulos2024 -keypass subtitulos2024 \
-              -dname "CN=SubtitulosLive, OU=Personal, O=Personal, L=NA, S=NA, C=AR"
-          fi
-
       - name: Preparar proyecto Android
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p app/src/main/java/com/subtitulos/live
-          mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/drawable
-          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          mkdir -p app/src/main/res/values app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
 
           cat > settings.gradle.kts <<'__EOF__'
-          pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-              repositories { google(); mavenCentral() }
-          }
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
           rootProject.name = "SubtitulosLive"
           include(":app")
           __EOF__
@@ -87,6 +60,8 @@ jobs:
           -dontwarn com.sun.jna.**
           -keep class com.google.mlkit.** { *; }
           -dontwarn com.google.mlkit.**
+          -keep class okhttp3.** { *; }
+          -dontwarn okhttp3.**
           __EOF__
 
           cat > app/build.gradle.kts <<'__EOF__'
@@ -104,7 +79,7 @@ jobs:
                   minSdk = 29
                   targetSdk = 34
                   versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-                  versionName = System.getenv("VERSION_NAME") ?: "2.2.0"
+                  versionName = System.getenv("VERSION_NAME") ?: "3.0.0"
                   resourceConfigurations += listOf("es", "en")
               }
 
@@ -119,10 +94,7 @@ jobs:
                       isMinifyEnabled = true
                       isShrinkResources = true
                       signingConfig = signingConfigs.getByName("debug")
-                      proguardFiles(
-                          getDefaultProguardFile("proguard-android-optimize.txt"),
-                          "proguard-rules.pro"
-                      )
+                      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
                   }
               }
 
@@ -138,6 +110,7 @@ jobs:
               implementation("androidx.activity:activity-ktx:1.9.2")
               implementation("com.google.android.material:material:1.12.0")
               implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+              implementation("com.squareup.okhttp3:okhttp:4.12.0")
               implementation("com.alphacephei:vosk-android:0.3.75@aar")
               implementation("net.java.dev.jna:jna:5.14.0@aar")
               implementation("com.google.mlkit:translate:17.0.3")
@@ -153,15 +126,17 @@ jobs:
               <string name="label_target">Traducir al idioma</string>
               <string name="btn_start">Iniciar subtítulos</string>
               <string name="btn_stop">Detener</string>
+              <string name="btn_settings">Ajustes</string>
               <string name="msg_preparing">Preparando subtítulos…</string>
-              <string name="msg_downloading_model">Descargando modelo de reconocimiento…</string>
+              <string name="msg_downloading_model">Descargando modelo…</string>
               <string name="msg_preparing_translation">Preparando traducción…</string>
               <string name="msg_listening">Escuchando audio interno…</string>
               <string name="msg_listening_plus">Escuchando audio…</string>
-              <string name="msg_translation_error">No se pudo descargar el idioma</string>
+              <string name="msg_translation_error">Error de traducción</string>
               <string name="msg_capture_error">Error de captura</string>
-              <string name="msg_overlay_fail">No se pudo mostrar la ventana de subtítulos: %1$s</string>
+              <string name="msg_overlay_fail">No se pudo mostrar la ventana: %1$s</string>
               <string name="msg_overlay_perm">Falta el permiso de superposición</string>
+              <string name="msg_srt_saved">Subtítulos guardados en %1$s</string>
               <string name="btn_voice_on">Voz: Sí</string>
               <string name="btn_voice_off">Voz: No</string>
               <string name="btn_smaller">A−</string>
@@ -184,9 +159,8 @@ jobs:
           cat > app/src/main/res/values/themes.xml <<'__EOF__'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
-              <style name="Theme.SubtitulosLive" parent="Theme.Material3.Dark.NoActionBar">
-                  <item name="android:statusBarColor">@android:color/black</item>
-                  <item name="android:navigationBarColor">@android:color/black</item>
+              <style name="Theme.SubtitulosLive" parent="Theme.Material3.DayNight.NoActionBar">
+                  <item name="android:statusBarColor">@android:color/transparent</item>
               </style>
           </resources>
           __EOF__
@@ -236,7 +210,11 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
-
+                  <activity
+                      android:name=".SettingsActivity"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:exported="false"
+                      android:label="@string/btn_settings" />
                   <service
                       android:name=".CaptureService"
                       android:configChanges="orientation|screenSize|keyboardHidden"
@@ -250,21 +228,188 @@ jobs:
           package com.subtitulos.live
 
           import com.google.mlkit.nl.translate.TranslateLanguage
+          import java.util.Locale
 
-          data class LanguageOption(val code: String, val model: String, val translateCode: String)
+          data class LanguageOption(
+              val code: String,
+              val smallModel: String,
+              val largeModel: String,
+              val translateCode: String,
+              val ttsLocale: Locale
+          )
+
+          fun deeplSource(code: String): String = when (code) {
+              "zh" -> "ZH"; "pt" -> "PT"; "en" -> "EN"; else -> code.uppercase()
+          }
+
+          fun deeplTarget(code: String): String = when (code) {
+              "zh" -> "ZH"; "pt" -> "PT-BR"; "en" -> "EN-US"; else -> code.uppercase()
+          }
 
           val LANGS = linkedMapOf(
-              "Español" to LanguageOption("es", "vosk-model-small-es-0.42", TranslateLanguage.SPANISH),
-              "Inglés" to LanguageOption("en", "vosk-model-small-en-us-0.15", TranslateLanguage.ENGLISH),
-              "Alemán" to LanguageOption("de", "vosk-model-small-de-0.15", TranslateLanguage.GERMAN),
-              "Coreano" to LanguageOption("ko", "vosk-model-small-ko-0.22", TranslateLanguage.KOREAN),
-              "Portugués" to LanguageOption("pt", "vosk-model-small-pt-0.3", TranslateLanguage.PORTUGUESE),
-              "Francés" to LanguageOption("fr", "vosk-model-small-fr-0.22", TranslateLanguage.FRENCH),
-              "Italiano" to LanguageOption("it", "vosk-model-small-it-0.22", TranslateLanguage.ITALIAN),
-              "Japonés" to LanguageOption("ja", "vosk-model-small-ja-0.22", TranslateLanguage.JAPANESE),
-              "Ruso" to LanguageOption("ru", "vosk-model-small-ru-0.22", TranslateLanguage.RUSSIAN),
-              "Chino" to LanguageOption("zh", "vosk-model-small-cn-0.22", TranslateLanguage.CHINESE)
+              "Español" to LanguageOption("es", "vosk-model-small-es-0.42", "vosk-model-es-0.42", TranslateLanguage.SPANISH, Locale("es")),
+              "Inglés" to LanguageOption("en", "vosk-model-small-en-us-0.15", "vosk-model-en-us-0.22", TranslateLanguage.ENGLISH, Locale.US),
+              "Alemán" to LanguageOption("de", "vosk-model-small-de-0.15", "vosk-model-de-0.21", TranslateLanguage.GERMAN, Locale.GERMANY),
+              "Coreano" to LanguageOption("ko", "vosk-model-small-ko-0.22", "vosk-model-ko-0.22", TranslateLanguage.KOREAN, Locale.KOREA),
+              "Portugués" to LanguageOption("pt", "vosk-model-small-pt-0.3", "vosk-model-pt-fb-v0.1.1-20220516_2113", TranslateLanguage.PORTUGUESE, Locale("pt", "BR")),
+              "Francés" to LanguageOption("fr", "vosk-model-small-fr-0.22", "vosk-model-fr-0.22", TranslateLanguage.FRENCH, Locale.FRANCE),
+              "Italiano" to LanguageOption("it", "vosk-model-small-it-0.22", "vosk-model-it-0.22", TranslateLanguage.ITALIAN, Locale.ITALY),
+              "Japonés" to LanguageOption("ja", "vosk-model-small-ja-0.22", "vosk-model-ja-0.22", TranslateLanguage.JAPANESE, Locale.JAPAN),
+              "Ruso" to LanguageOption("ru", "vosk-model-small-ru-0.22", "vosk-model-ru-0.42", TranslateLanguage.RUSSIAN, Locale("ru")),
+              "Chino" to LanguageOption("zh", "vosk-model-small-cn-0.22", "vosk-model-cn-0.22", TranslateLanguage.CHINESE, Locale.SIMPLIFIED_CHINESE)
           )
+          __EOF__
+
+          cat > app/src/main/java/com/subtitulos/live/AppSettings.kt <<'__EOF__'
+          package com.subtitulos.live
+
+          import android.content.Context
+
+          class AppSettings(context: Context) {
+              private val prefs = context.applicationContext
+                  .getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+              var sourceLang: String
+                  get() = prefs.getString("source_lang", "Inglés") ?: "Inglés"
+                  set(v) = prefs.edit().putString("source_lang", v).apply()
+
+              var targetLang: String
+                  get() = prefs.getString("target_lang", "Español") ?: "Español"
+                  set(v) = prefs.edit().putString("target_lang", v).apply()
+
+              var useLargeModel: Boolean
+                  get() = prefs.getBoolean("use_large_model", false)
+                  set(v) = prefs.edit().putBoolean("use_large_model", v).apply()
+
+              var translatorMode: String
+                  get() = prefs.getString("translator_mode", "mlkit") ?: "mlkit"
+                  set(v) = prefs.edit().putString("translator_mode", v).apply()
+
+              var deeplApiKey: String
+                  get() = prefs.getString("deepl_api_key", "") ?: ""
+                  set(v) = prefs.edit().putString("deepl_api_key", v).apply()
+
+              var audioFilter: String
+                  get() = prefs.getString("audio_filter", "media") ?: "media"
+                  set(v) = prefs.edit().putString("audio_filter", v).apply()
+
+              var voiceEnabled: Boolean
+                  get() = prefs.getBoolean("voice_enabled", true)
+                  set(v) = prefs.edit().putBoolean("voice_enabled", v).apply()
+
+              var ttsSpeed: Float
+                  get() = prefs.getFloat("tts_speed", 1.0f)
+                  set(v) = prefs.edit().putFloat("tts_speed", v).apply()
+
+              var ttsVolume: Int
+                  get() = prefs.getInt("tts_volume", 100)
+                  set(v) = prefs.edit().putInt("tts_volume", v).apply()
+
+              var subtitleSizeIndex: Int
+                  get() = prefs.getInt("sub_size", 2)
+                  set(v) = prefs.edit().putInt("sub_size", v).apply()
+
+              var subtitleMode: String
+                  get() = prefs.getString("sub_mode", "both") ?: "both"
+                  set(v) = prefs.edit().putString("sub_mode", v).apply()
+
+              var themeMode: String
+                  get() = prefs.getString("theme_mode", "auto") ?: "auto"
+                  set(v) = prefs.edit().putString("theme_mode", v).apply()
+
+              var autoExportSrt: Boolean
+                  get() = prefs.getBoolean("auto_export_srt", false)
+                  set(v) = prefs.edit().putBoolean("auto_export_srt", v).apply()
+
+              var overlayX: Int
+                  get() = prefs.getInt("overlay_x", -1)
+                  set(v) = prefs.edit().putInt("overlay_x", v).apply()
+
+              var overlayY: Int
+                  get() = prefs.getInt("overlay_y", -1)
+                  set(v) = prefs.edit().putInt("overlay_y", v).apply()
+          }
+          __EOF__
+
+          cat > app/src/main/java/com/subtitulos/live/DeepLClient.kt <<'__EOF__'
+          package com.subtitulos.live
+
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          import okhttp3.FormBody
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import org.json.JSONObject
+          import java.io.IOException
+
+          class DeepLClient(private val apiKey: String) {
+              private val client = OkHttpClient()
+
+              suspend fun translate(text: String, sourceCode: String, targetCode: String): String =
+                  withContext(Dispatchers.IO) {
+                      val url = "https://api-free.deepl.com/v2/translate"
+                      val body = FormBody.Builder()
+                          .add("text", text)
+                          .add("source_lang", deeplSource(sourceCode))
+                          .add("target_lang", deeplTarget(targetCode))
+                          .build()
+                      val req = Request.Builder()
+                          .url(url)
+                          .addHeader("Authorization", "DeepL-Auth-Key $apiKey")
+                          .post(body)
+                          .build()
+                      client.newCall(req).execute().use { resp ->
+                          if (!resp.isSuccessful) throw IOException("DeepL ${resp.code}")
+                          val json = JSONObject(resp.body!!.string())
+                          json.getJSONArray("translations").getJSONObject(0).getString("text")
+                      }
+                  }
+          }
+          __EOF__
+
+          cat > app/src/main/java/com/subtitulos/live/SrtExporter.kt <<'__EOF__'
+          package com.subtitulos.live
+
+          import android.content.ContentValues
+          import android.content.Context
+          import android.os.Environment
+          import android.provider.MediaStore
+          import java.io.IOException
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+
+          data class SubtitleEntry(val startMs: Long, val endMs: Long, val original: String, val translated: String?)
+
+          object SrtExporter {
+              fun save(context: Context, entries: List<SubtitleEntry>): String {
+                  val filename = "subtitulos-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}.srt"
+                  val content = buildString {
+                      entries.forEachIndexed { i, e ->
+                          append("${i + 1}\n")
+                          append("${fmt(e.startMs)} --> ${fmt(e.endMs)}\n")
+                          if (e.translated.isNullOrBlank()) append("${e.original}\n")
+                          else append("${e.original}\n${e.translated}\n")
+                          append("\n")
+                      }
+                  }
+                  val values = ContentValues().apply {
+                      put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                      put(MediaStore.Downloads.MIME_TYPE, "application/x-subrip")
+                      put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                  }
+                  val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                      ?: throw IOException("No se pudo crear el archivo")
+                  context.contentResolver.openOutputStream(uri)!!.use { it.write(content.toByteArray()) }
+                  return "Descargas/$filename"
+              }
+
+              private fun fmt(ms: Long): String {
+                  val h = ms / 3_600_000; val m = (ms % 3_600_000) / 60_000
+                  val s = (ms % 60_000) / 1_000; val milli = ms % 1_000
+                  return String.format(Locale.US, "%02d:%02d:%02d,%03d", h, m, s, milli)
+              }
+          }
           __EOF__
 
           cat > app/src/main/java/com/subtitulos/live/MainActivity.kt <<'__EOF__'
@@ -285,10 +430,12 @@ jobs:
           import android.widget.TextView
           import androidx.activity.result.contract.ActivityResultContracts
           import androidx.appcompat.app.AppCompatActivity
+          import androidx.appcompat.app.AppCompatDelegate
           import androidx.core.content.ContextCompat
           import com.google.android.material.button.MaterialButton
 
           class MainActivity : AppCompatActivity() {
+              private lateinit var settings: AppSettings
               private lateinit var sourceSpinner: Spinner
               private lateinit var targetSpinner: Spinner
               private var pendingStart = false
@@ -298,13 +445,13 @@ jobs:
               ) { result ->
                   val data = result.data
                   if (result.resultCode == RESULT_OK && data != null) {
-                      val serviceIntent = Intent(this, CaptureService::class.java).apply {
-                          putExtra("resultCode", result.resultCode)
-                          putExtra("projectionData", data)
-                          putExtra("source", sourceSpinner.selectedItem as String)
-                          putExtra("target", targetSpinner.selectedItem as String)
-                      }
-                      ContextCompat.startForegroundService(this, serviceIntent)
+                      ContextCompat.startForegroundService(
+                          this,
+                          Intent(this, CaptureService::class.java).apply {
+                              putExtra("resultCode", result.resultCode)
+                              putExtra("projectionData", data)
+                          }
+                      )
                       moveTaskToBack(true)
                   }
               }
@@ -315,31 +462,15 @@ jobs:
 
               private val permissionLauncher = registerForActivityResult(
                   ActivityResultContracts.RequestMultiplePermissions()
-              ) { grants ->
-                  if (grants[Manifest.permission.RECORD_AUDIO] == true) continueStart()
-              }
-
-              private fun makeSpinner(selected: Int): Spinner = Spinner(this).apply {
-                  adapter = ArrayAdapter(
-                      this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
-                      LANGS.keys.toList()
-                  )
-                  setSelection(selected.coerceIn(0, LANGS.size - 1))
-                  layoutParams = LinearLayout.LayoutParams(
-                      ViewGroup.LayoutParams.MATCH_PARENT,
-                      ViewGroup.LayoutParams.WRAP_CONTENT
-                  ).apply { topMargin = 8; bottomMargin = 24 }
-              }
+              ) { grants -> if (grants[Manifest.permission.RECORD_AUDIO] == true) continueStart() }
 
               override fun onCreate(savedInstanceState: Bundle?) {
+                  settings = AppSettings(this)
+                  applyTheme()
                   super.onCreate(savedInstanceState)
-                  val prefs = getSharedPreferences("main", MODE_PRIVATE)
-                  sourceSpinner = makeSpinner(
-                      LANGS.keys.indexOf(prefs.getString("source", "Inglés") ?: "Inglés").coerceAtLeast(0)
-                  )
-                  targetSpinner = makeSpinner(
-                      LANGS.keys.indexOf(prefs.getString("target", "Español") ?: "Español").coerceAtLeast(0)
-                  )
+
+                  sourceSpinner = makeSpinner(LANGS.keys.indexOf(settings.sourceLang).coerceAtLeast(0))
+                  targetSpinner = makeSpinner(LANGS.keys.indexOf(settings.targetLang).coerceAtLeast(0))
 
                   val title = TextView(this).apply {
                       text = getString(R.string.title); textSize = 26f
@@ -351,22 +482,53 @@ jobs:
                       text = getString(R.string.btn_start)
                       setOnClickListener { startCapture() }
                   }
-                  val stopButton = MaterialButton(this).apply {
-                      text = getString(R.string.btn_stop)
-                      setOnClickListener { stopService(Intent(this@MainActivity, CaptureService::class.java)) }
+                  val settingsButton = MaterialButton(this).apply {
+                      text = getString(R.string.btn_settings)
+                      setOnClickListener {
+                          startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                      }
                       layoutParams = LinearLayout.LayoutParams(
                           ViewGroup.LayoutParams.MATCH_PARENT,
                           ViewGroup.LayoutParams.WRAP_CONTENT
                       ).apply { topMargin = 16 }
+                  }
+                  val stopButton = MaterialButton(this).apply {
+                      text = getString(R.string.btn_stop)
+                      setOnClickListener {
+                          stopService(Intent(this@MainActivity, CaptureService::class.java))
+                      }
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = 8 }
                   }
 
                   setContentView(LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       gravity = Gravity.CENTER_HORIZONTAL
                       setPadding(60, 60, 60, 60)
-                      listOf(title, sourceLabel, sourceSpinner, targetLabel, targetSpinner, startButton, stopButton)
-                          .forEach { addView(it) }
+                      listOf(title, sourceLabel, sourceSpinner, targetLabel, targetSpinner,
+                          startButton, settingsButton, stopButton).forEach { addView(it) }
                   })
+              }
+
+              private fun applyTheme() {
+                  val mode = when (settings.themeMode) {
+                      "light" -> AppCompatDelegate.MODE_NIGHT_NO
+                      "dark" -> AppCompatDelegate.MODE_NIGHT_YES
+                      else -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+                  }
+                  AppCompatDelegate.setDefaultNightMode(mode)
+              }
+
+              private fun makeSpinner(selected: Int): Spinner = Spinner(this).apply {
+                  adapter = ArrayAdapter(this@MainActivity,
+                      android.R.layout.simple_spinner_dropdown_item, LANGS.keys.toList())
+                  setSelection(selected.coerceIn(0, LANGS.size - 1))
+                  layoutParams = LinearLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT,
+                      ViewGroup.LayoutParams.WRAP_CONTENT
+                  ).apply { topMargin = 8; bottomMargin = 24 }
               }
 
               private fun startCapture() { pendingStart = true; continueStart() }
@@ -374,25 +536,267 @@ jobs:
               private fun continueStart() {
                   if (!pendingStart) return
                   if (!Settings.canDrawOverlays(this)) {
-                      overlayLauncher.launch(
-                          Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-                      ); return
+                      overlayLauncher.launch(Intent(
+                          Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                          Uri.parse("package:$packageName")))
+                      return
                   }
                   val audioOk = ContextCompat.checkSelfPermission(
-                      this, Manifest.permission.RECORD_AUDIO
-                  ) == PackageManager.PERMISSION_GRANTED
+                      this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
                   if (!audioOk) {
-                      permissionLauncher.launch(
-                          arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
-                      ); return
+                      permissionLauncher.launch(arrayOf(
+                          Manifest.permission.RECORD_AUDIO,
+                          Manifest.permission.POST_NOTIFICATIONS))
+                      return
                   }
                   pendingStart = false
-                  getSharedPreferences("main", MODE_PRIVATE).edit()
-                      .putString("source", sourceSpinner.selectedItem as String)
-                      .putString("target", targetSpinner.selectedItem as String).apply()
+                  settings.sourceLang = sourceSpinner.selectedItem as String
+                  settings.targetLang = targetSpinner.selectedItem as String
                   captureLauncher.launch(
-                      getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent()
-                  )
+                      getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
+              }
+          }
+          __EOF__
+
+          cat > app/src/main/java/com/subtitulos/live/SettingsActivity.kt <<'__EOF__'
+          package com.subtitulos.live
+
+          import android.os.Bundle
+          import android.text.Editable
+          import android.text.TextWatcher
+          import android.view.Gravity
+          import android.view.ViewGroup
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.RadioButton
+          import android.widget.RadioGroup
+          import android.widget.ScrollView
+          import android.widget.SeekBar
+          import android.widget.Switch
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.appcompat.app.AppCompatDelegate
+          import com.google.android.material.button.MaterialButton
+
+          class SettingsActivity : AppCompatActivity() {
+              private lateinit var settings: AppSettings
+              private lateinit var root: LinearLayout
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  settings = AppSettings(this)
+                  applyTheme()
+                  super.onCreate(savedInstanceState)
+                  val scroll = ScrollView(this)
+                  root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(48, 48, 48, 48)
+                  }
+                  scroll.addView(root)
+                  setContentView(scroll)
+                  buildUI()
+              }
+
+              private fun applyTheme() {
+                  val mode = when (settings.themeMode) {
+                      "light" -> AppCompatDelegate.MODE_NIGHT_NO
+                      "dark" -> AppCompatDelegate.MODE_NIGHT_YES
+                      else -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
+                  }
+                  AppCompatDelegate.setDefaultNightMode(mode)
+              }
+
+              private fun buildUI() {
+                  root.removeAllViews()
+                  root.addView(TextView(this).apply {
+                      text = "Ajustes"; textSize = 28f
+                      setPadding(0, 0, 0, 32)
+                  })
+
+                  // ---- Reconocimiento ----
+                  section("Reconocimiento de voz")
+                  root.addView(switchRow(
+                      "Modelo grande (mucho más preciso, descarga ~1.5 GB)",
+                      settings.useLargeModel
+                  ) { settings.useLargeModel = it })
+
+                  // ---- Traducción ----
+                  section("Traducción")
+                  val trGroup = RadioGroup(this)
+                  val mlkitRadio = RadioButton(this).apply { text = "ML Kit (offline, gratis, ilimitado)"; id = 1 }
+                  val deeplRadio = RadioButton(this).apply { text = "DeepL (online, mejor calidad, 500k chars/mes gratis)"; id = 2 }
+                  trGroup.addView(mlkitRadio); trGroup.addView(deeplRadio)
+                  if (settings.translatorMode == "deepl") deeplRadio.isChecked = true else mlkitRadio.isChecked = true
+                  trGroup.setOnCheckedChangeListener { _, id ->
+                      settings.translatorMode = if (id == 2) "deepl" else "mlkit"
+                      buildUI()
+                  }
+                  root.addView(trGroup)
+
+                  if (settings.translatorMode == "deepl") {
+                      root.addView(TextView(this).apply {
+                          text = "API key de DeepL (regístrate gratis en deepl.com/pro-api)"
+                          textSize = 12f; setPadding(0, 8, 0, 8)
+                      })
+                      root.addView(EditText(this).apply {
+                          setText(settings.deeplApiKey)
+                          hint = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx"
+                          addTextChangedListener(object : TextWatcher {
+                              override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                              override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                              override fun afterTextChanged(s: Editable?) {
+                                  settings.deeplApiKey = s?.toString() ?: ""
+                              }
+                          })
+                      })
+                  }
+
+                  // ---- Audio ----
+                  section("Audio a capturar")
+                  val audioGroup = RadioGroup(this)
+                  val mediaRadio = RadioButton(this).apply { text = "Solo multimedia (música, vídeos, apps)"; id = 1 }
+                  val gamesRadio = RadioButton(this).apply { text = "Multimedia + juegos"; id = 2 }
+                  val allRadio = RadioButton(this).apply { text = "Todo (incluye notificaciones)"; id = 3 }
+                  audioGroup.addView(mediaRadio); audioGroup.addView(gamesRadio); audioGroup.addView(allRadio)
+                  when (settings.audioFilter) {
+                      "games" -> gamesRadio.isChecked = true
+                      "all" -> allRadio.isChecked = true
+                      else -> mediaRadio.isChecked = true
+                  }
+                  audioGroup.setOnCheckedChangeListener { _, id ->
+                      settings.audioFilter = when (id) { 2 -> "games"; 3 -> "all"; else -> "media" }
+                  }
+                  root.addView(audioGroup)
+
+                  // ---- Voz ----
+                  section("Voz (TTS)")
+                  root.addView(switchRow("Leer en voz alta", settings.voiceEnabled) {
+                      settings.voiceEnabled = it
+                  })
+                  root.addView(sliderRow("Velocidad", 5f, 20f, settings.ttsSpeed * 10f) { v ->
+                      settings.ttsSpeed = v / 10f
+                  })
+                  root.addView(sliderRow("Volumen", 0f, 100f, settings.ttsVolume.toFloat()) { v ->
+                      settings.ttsVolume = v.toInt()
+                  })
+
+                  // ---- Subtítulos ----
+                  section("Subtítulos")
+                  val modeGroup = RadioGroup(this)
+                  val bothRadio = RadioButton(this).apply { text = "Original + traducción"; id = 1 }
+                  val origRadio = RadioButton(this).apply { text = "Solo original"; id = 2 }
+                  val transRadio = RadioButton(this).apply { text = "Solo traducción"; id = 3 }
+                  modeGroup.addView(bothRadio); modeGroup.addView(origRadio); modeGroup.addView(transRadio)
+                  when (settings.subtitleMode) {
+                      "original" -> origRadio.isChecked = true
+                      "translated" -> transRadio.isChecked = true
+                      else -> bothRadio.isChecked = true
+                  }
+                  modeGroup.setOnCheckedChangeListener { _, id ->
+                      settings.subtitleMode = when (id) { 2 -> "original"; 3 -> "translated"; else -> "both" }
+                  }
+                  root.addView(modeGroup)
+                  root.addView(sliderRow("Tamaño", 0f, 5f, settings.subtitleSizeIndex.toFloat()) { v ->
+                      settings.subtitleSizeIndex = v.toInt()
+                  })
+
+                  // ---- Tema ----
+                  section("Tema")
+                  val themeGroup = RadioGroup(this)
+                  val autoRadio = RadioButton(this).apply { text = "Automático (sigue el sistema)"; id = 1 }
+                  val lightRadio = RadioButton(this).apply { text = "Claro"; id = 2 }
+                  val darkRadio = RadioButton(this).apply { text = "Oscuro"; id = 3 }
+                  themeGroup.addView(autoRadio); themeGroup.addView(lightRadio); themeGroup.addView(darkRadio)
+                  when (settings.themeMode) {
+                      "light" -> lightRadio.isChecked = true
+                      "dark" -> darkRadio.isChecked = true
+                      else -> autoRadio.isChecked = true
+                  }
+                  themeGroup.setOnCheckedChangeListener { _, id ->
+                      settings.themeMode = when (id) { 2 -> "light"; 3 -> "dark"; else -> "auto" }
+                      applyTheme(); recreate()
+                  }
+                  root.addView(themeGroup)
+
+                  // ---- Exportación ----
+                  section("Exportación")
+                  root.addView(switchRow("Guardar .srt automáticamente al detener", settings.autoExportSrt) {
+                      settings.autoExportSrt = it
+                  })
+
+                  // ---- Reset ----
+                  root.addView(MaterialButton(this).apply {
+                      text = "Restablecer valores por defecto"
+                      setOnClickListener {
+                          settings.useLargeModel = false
+                          settings.translatorMode = "mlkit"
+                          settings.deeplApiKey = ""
+                          settings.audioFilter = "media"
+                          settings.voiceEnabled = true
+                          settings.ttsSpeed = 1.0f
+                          settings.ttsVolume = 100
+                          settings.subtitleMode = "both"
+                          settings.subtitleSizeIndex = 2
+                          settings.themeMode = "auto"
+                          settings.autoExportSrt = false
+                          applyTheme(); buildUI()
+                      }
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = 32 }
+                  })
+
+                  root.addView(MaterialButton(this).apply {
+                      text = "Volver"
+                      setOnClickListener { finish() }
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = 8 }
+                  })
+              }
+
+              private fun section(title: String) {
+                  root.addView(TextView(this).apply {
+                      text = title; textSize = 18f; setPadding(0, 32, 0, 8)
+                  })
+              }
+
+              private fun switchRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit): LinearLayout {
+                  return LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      addView(TextView(this@SettingsActivity).apply {
+                          text = label; textSize = 14f
+                          layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                      })
+                      addView(Switch(this@SettingsActivity).apply {
+                          isChecked = checked
+                          setOnCheckedChangeListener { _, v -> onChange(v) }
+                      })
+                  }
+              }
+
+              private fun sliderRow(label: String, from: Float, to: Float, current: Float, onChange: (Float) -> Unit): LinearLayout {
+                  val lbl = TextView(this).apply { text = "$label: ${current.toInt()}" }
+                  val bar = SeekBar(this).apply {
+                      max = ((to - from) * 10).toInt()
+                      progress = ((current - from) * 10).toInt().coerceIn(0, max)
+                      setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                          override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                              val v = from + p / 10f
+                              lbl.text = "$label: ${v.toInt()}"
+                              onChange(v)
+                          }
+                          override fun onStartTrackingTouch(sb: SeekBar?) {}
+                          override fun onStopTrackingTouch(sb: SeekBar?) {}
+                      })
+                  }
+                  return LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(0, 12, 0, 0)
+                      addView(lbl); addView(bar)
+                  }
               }
           }
           __EOF__
@@ -415,7 +819,6 @@ jobs:
           import android.media.projection.MediaProjection
           import android.media.projection.MediaProjectionManager
           import android.os.Build
-          import android.os.Bundle
           import android.os.Handler
           import android.os.IBinder
           import android.os.Looper
@@ -427,7 +830,6 @@ jobs:
           import android.view.WindowManager
           import android.widget.Button
           import android.widget.LinearLayout
-          import android.widget.SeekBar
           import android.widget.TextView
           import android.widget.Toast
           import com.google.mlkit.common.model.DownloadConditions
@@ -456,6 +858,7 @@ jobs:
               private val mainHandler = Handler(Looper.getMainLooper())
               private val running = AtomicBoolean(false)
 
+              private lateinit var settings: AppSettings
               private var audioRecord: AudioRecord? = null
               private var projection: MediaProjection? = null
               private var captureJob: Job? = null
@@ -465,40 +868,56 @@ jobs:
               private var windowParams: WindowManager.LayoutParams? = null
 
               private var translator: Translator? = null
+              private var deepL: DeepLClient? = null
               private var modelReady = false
 
               private var tts: TextToSpeech? = null
               private var ttsReady = false
-
-              private var speechEnabled = true
-              private var speechVolume = 100
               private var targetLocale = Locale("es")
               private var lastRecognized = ""
-              private var sizeIndex = 2
               private var lastUiUpdate = 0L
               private val sizes = floatArrayOf(14f, 18f, 22f, 28f, 36f, 46f)
+
+              private val subtitleLog = mutableListOf<SubtitleEntry>()
+              private var sessionStart = 0L
+              private var lastFinalTime = 0L
+              private var lastOriginal = ""
+              private var lastTranslated: String? = null
 
               override fun onBind(intent: Intent?): IBinder? = null
 
               override fun onInit(status: Int) {
                   ttsReady = status == TextToSpeech.SUCCESS
-                  if (ttsReady) tts?.language = targetLocale
+                  if (ttsReady) applyTtsSettings()
+              }
+
+              private fun applyTtsSettings() {
+                  try {
+                      tts?.language = targetLocale
+                      tts?.setSpeechRate(settings.ttsSpeed)
+                      val voices = tts?.voices ?: return
+                      val best = voices.filter { it.locale.language == targetLocale.language }
+                          .maxByOrNull { it.quality }
+                      if (best != null && !best.isNetworkConnectionRequired) tts?.voice = best
+                  } catch (_: Exception) {}
               }
 
               override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
                   if (intent == null) return START_NOT_STICKY
                   cleanup()
                   running.set(true)
+                  settings = AppSettings(this)
 
-                  val sourceName = intent.getStringExtra("source") ?: "Inglés"
-                  val targetName = intent.getStringExtra("target") ?: "Español"
-                  val source = LANGS[sourceName] ?: LANGS.values.first()
-                  val target = LANGS[targetName] ?: LANGS.values.first()
-                  targetLocale = localeFor(target.code)
-
-                  lastRecognized = ""; modelReady = false
-                  speechEnabled = true; speechVolume = 100
-                  lastUiUpdate = 0L
+                  val source = LANGS[settings.sourceLang] ?: LANGS.values.first()
+                  val target = LANGS[settings.targetLang] ?: LANGS.values.first()
+                  targetLocale = target.ttsLocale
+                  sessionStart = System.currentTimeMillis()
+                  lastFinalTime = sessionStart
+                  lastOriginal = ""
+                  lastTranslated = null
+                  lastRecognized = ""
+                  modelReady = false
+                  subtitleLog.clear()
 
                   startForegroundNotification()
 
@@ -515,11 +934,16 @@ jobs:
                       override fun onStop() { stopSelf() }
                   }, mainHandler)
 
-                  ensureTts()
+                  if (tts == null) tts = TextToSpeech(this, this) else applyTtsSettings()
                   createOverlay()
 
+                  // Configurar traductor
                   if (source.translateCode == target.translateCode) {
                       modelReady = true
+                  } else if (settings.translatorMode == "deepl" && settings.deeplApiKey.isNotBlank()) {
+                      deepL = DeepLClient(settings.deeplApiKey)
+                      modelReady = true
+                      showSubtitle(getString(R.string.msg_listening_plus))
                   } else {
                       translator = Translation.getClient(
                           TranslatorOptions.Builder()
@@ -541,27 +965,39 @@ jobs:
                   return START_STICKY
               }
 
+              private fun buildAudioConfig(): android.media.AudioPlaybackCaptureConfiguration {
+                  val b = android.media.AudioPlaybackCaptureConfiguration.Builder(projection!!)
+                  when (settings.audioFilter) {
+                      "all" -> {
+                          b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                          b.addMatchingUsage(AudioAttributes.USAGE_GAME)
+                          b.addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                      }
+                      "games" -> {
+                          b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                          b.addMatchingUsage(AudioAttributes.USAGE_GAME)
+                      }
+                      else -> b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                  }
+                  return b.build()
+              }
+
               private fun runCaptureLoop(source: LanguageOption) {
                   var recognizer: Recognizer? = null
                   var recorder: AudioRecord? = null
                   try {
-                      val model = loadModel(source.code, source.model)
+                      val model = loadModel(source)
                       if (!running.get()) return
                       recognizer = Recognizer(model, 16000.0f)
 
-                      val config = android.media.AudioPlaybackCaptureConfiguration
-                          .Builder(projection!!)
-                          .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                          .addMatchingUsage(AudioAttributes.USAGE_GAME).build()
                       val format = AudioFormat.Builder()
                           .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                           .setSampleRate(16000)
                           .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
                       val minBuf = AudioRecord.getMinBufferSize(
-                          16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
-                      )
+                          16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
                       recorder = AudioRecord.Builder()
-                          .setAudioPlaybackCaptureConfig(config)
+                          .setAudioPlaybackCaptureConfig(buildAudioConfig())
                           .setAudioFormat(format)
                           .setBufferSizeInBytes(maxOf(minBuf * 2, 32768)).build()
                       audioRecord = recorder
@@ -573,20 +1009,16 @@ jobs:
                           val count = recorder.read(buffer, 0, buffer.size)
                           if (count <= 0) continue
                           val isFinal = recognizer.acceptWaveForm(buffer, count)
-                          val json = JSONObject(
-                              if (isFinal) recognizer.result else recognizer.partialResult
-                          )
+                          val json = JSONObject(if (isFinal) recognizer.result else recognizer.partialResult)
                           val key = if (isFinal) "text" else "partial"
                           val recognized = json.optString(key).trim()
                           if (recognized.isNotBlank() && (isFinal || recognized != lastRecognized)) {
                               lastRecognized = if (isFinal) "" else recognized
-                              processText(recognized, isFinal)
+                              processText(recognized, isFinal, source)
                           }
                       }
                   } catch (e: Exception) {
-                      if (running.get()) showSubtitle(
-                          getString(R.string.msg_capture_error) + ": " + (e.localizedMessage ?: "?")
-                      )
+                      if (running.get()) showSubtitle(getString(R.string.msg_capture_error) + ": " + (e.localizedMessage ?: "?"))
                   } finally {
                       try { recorder?.stop() } catch (_: Exception) {}
                       try { recorder?.release() } catch (_: Exception) {}
@@ -594,21 +1026,67 @@ jobs:
                   }
               }
 
-              private fun processText(text: String, isFinal: Boolean) {
+              private fun processText(text: String, isFinal: Boolean, source: LanguageOption) {
+                  val target = LANGS[settings.targetLang] ?: LANGS.values.first()
+
+                  // Sin traducción necesaria
+                  if (source.code == target.code) {
+                      showSubtitleThrottled(formatSubtitle(text, null), isFinal)
+                      if (isFinal) { recordEntry(text, null); speak(text) }
+                      return
+                  }
+
+                  val dl = deepL
+                  if (dl != null) {
+                      scope.launch {
+                          try {
+                              val translated = dl.translate(text, source.code, target.code)
+                              mainHandler.post {
+                                  if (!running.get()) return@post
+                                  showSubtitleThrottled(formatSubtitle(text, translated), isFinal)
+                                  if (isFinal) { recordEntry(text, translated); speak(translated) }
+                              }
+                          } catch (_: Exception) {
+                              mainHandler.post {
+                                  if (running.get()) showSubtitleThrottled(formatSubtitle(text, null), isFinal)
+                              }
+                          }
+                      }
+                      return
+                  }
+
                   val tr = translator
                   if (tr == null || !modelReady) {
-                      showSubtitleThrottled(text, isFinal)
-                      if (isFinal) speak(text)
+                      showSubtitleThrottled(formatSubtitle(text, null), isFinal)
+                      if (isFinal) { recordEntry(text, null); speak(text) }
                       return
                   }
                   tr.translate(text).addOnSuccessListener { translated ->
                       if (running.get()) {
-                          showSubtitleThrottled("$text\n$translated", isFinal)
-                          if (isFinal) speak(translated)
+                          showSubtitleThrottled(formatSubtitle(text, translated), isFinal)
+                          if (isFinal) { recordEntry(text, translated); speak(translated) }
                       }
                   }.addOnFailureListener {
-                      showSubtitleThrottled("$text\n(Error de traducción)", true)
+                      showSubtitleThrottled(formatSubtitle(text, null), isFinal)
                   }
+              }
+
+              private fun formatSubtitle(original: String, translated: String?): String {
+                  return when (settings.subtitleMode) {
+                      "original" -> original
+                      "translated" -> translated ?: original
+                      else -> if (translated != null && translated != original) "$original\n$translated" else original
+                  }
+              }
+
+              private fun recordEntry(original: String, translated: String?) {
+                  val now = System.currentTimeMillis()
+                  if (original.isNotBlank()) {
+                      subtitleLog.add(SubtitleEntry(lastFinalTime, now, original, translated))
+                      lastFinalTime = now
+                  }
+                  lastOriginal = original
+                  lastTranslated = translated
               }
 
               private fun showSubtitleThrottled(text: String, force: Boolean) {
@@ -616,31 +1094,18 @@ jobs:
                   if (force || now - lastUiUpdate > 120) { lastUiUpdate = now; showSubtitle(text) }
               }
 
-              private fun ensureTts() {
-                  if (tts == null) { ttsReady = false; tts = TextToSpeech(this, this) }
-                  else if (ttsReady) tts?.language = targetLocale
-              }
-
               private fun speak(text: String) {
-                  if (!speechEnabled || !ttsReady || text.isBlank()) return
-                  val params = Bundle().apply {
-                      putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, speechVolume / 100f)
+                  if (!settings.voiceEnabled || !ttsReady || text.isBlank()) return
+                  val params = android.os.Bundle().apply {
+                      putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, settings.ttsVolume / 100f)
                   }
                   tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "sub-${System.currentTimeMillis()}")
               }
 
-              private fun localeFor(code: String): Locale = when (code) {
-                  "zh" -> Locale.SIMPLIFIED_CHINESE
-                  "pt" -> Locale("pt", "BR")
-                  else -> Locale.forLanguageTag(code)
-              }
-
               private fun startForegroundNotification() {
                   val nm = getSystemService(NotificationManager::class.java)
-                  nm.createNotificationChannel(
-                      NotificationChannel("subtitles_live",
-                          getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW)
-                  )
+                  nm.createNotificationChannel(NotificationChannel(
+                      "subtitles_live", getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW))
                   val notif = Notification.Builder(this, "subtitles_live")
                       .setContentTitle(getString(R.string.notif_title))
                       .setSmallIcon(android.R.drawable.ic_btn_speak_now).build()
@@ -650,65 +1115,44 @@ jobs:
               }
 
               private fun createOverlay() {
-                  // FIX #1: verificar permiso de superposición DENTRO del service
-                  if (!Settings.canDrawOverlays(this)) {
-                      showToast(getString(R.string.msg_overlay_perm))
-                      return
-                  }
-
-                  val p = getSharedPreferences("overlay", MODE_PRIVATE)
-                  sizeIndex = p.getInt("size", 2).coerceIn(0, sizes.lastIndex)
+                  if (!Settings.canDrawOverlays(this)) { showToast(getString(R.string.msg_overlay_perm)); return }
                   val metrics = resources.displayMetrics
                   val wm = getSystemService(WindowManager::class.java)
 
                   val subtitleTextView = TextView(this).apply {
                       setTextColor(Color.WHITE)
-                      textSize = sizes[sizeIndex]
+                      textSize = sizes[settings.subtitleSizeIndex.coerceIn(0, sizes.lastIndex)]
                       gravity = Gravity.CENTER
                       setBackgroundColor(0xCC000000.toInt())
                       setPadding(20, 14, 20, 14)
                       text = getString(R.string.msg_preparing)
                   }
 
-                  // FIX #2: usar Button normal (NO MaterialButton) en el Service
                   val smaller = Button(this).apply {
                       text = getString(R.string.btn_smaller)
-                      setOnClickListener { changeSize(sizeIndex - 1) }
+                      setOnClickListener {
+                          settings.subtitleSizeIndex = (settings.subtitleSizeIndex - 1).coerceAtLeast(0)
+                          subtitleTextView.textSize = sizes[settings.subtitleSizeIndex]
+                      }
                   }
                   val larger = Button(this).apply {
                       text = getString(R.string.btn_larger)
-                      setOnClickListener { changeSize(sizeIndex + 1) }
+                      setOnClickListener {
+                          settings.subtitleSizeIndex = (settings.subtitleSizeIndex + 1).coerceAtMost(sizes.lastIndex)
+                          subtitleTextView.textSize = sizes[settings.subtitleSizeIndex]
+                      }
                   }
                   val voice = Button(this).apply {
-                      text = getString(R.string.btn_voice_on)
+                      text = if (settings.voiceEnabled) getString(R.string.btn_voice_on) else getString(R.string.btn_voice_off)
                       setOnClickListener {
-                          speechEnabled = !speechEnabled
-                          text = getString(
-                              if (speechEnabled) R.string.btn_voice_on else R.string.btn_voice_off
-                          )
-                          if (!speechEnabled) try { tts?.stop() } catch (_: Exception) {}
+                          settings.voiceEnabled = !settings.voiceEnabled
+                          text = if (settings.voiceEnabled) getString(R.string.btn_voice_on) else getString(R.string.btn_voice_off)
+                          if (!settings.voiceEnabled) try { tts?.stop() } catch (_: Exception) {}
                       }
                   }
                   val stop = Button(this).apply {
                       text = getString(R.string.btn_stop)
                       setOnClickListener { stopSelf() }
-                  }
-
-                  val volumeLabel = TextView(this).apply {
-                      text = getString(R.string.volume_label, 100)
-                      setTextColor(Color.WHITE); gravity = Gravity.CENTER
-                      setPadding(4, 4, 4, 4)
-                  }
-                  val volume = SeekBar(this).apply {
-                      max = 100; progress = 100
-                      setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                          override fun onProgressChanged(sb: SeekBar?, pr: Int, fromUser: Boolean) {
-                              speechVolume = pr
-                              volumeLabel.text = getString(R.string.volume_label, pr)
-                          }
-                          override fun onStartTrackingTouch(sb: SeekBar?) {}
-                          override fun onStopTrackingTouch(sb: SeekBar?) {}
-                      })
                   }
 
                   val buttonRow = LinearLayout(this).apply {
@@ -718,16 +1162,11 @@ jobs:
                       addView(smaller); addView(larger); addView(voice); addView(stop)
                   }
 
-                  val controls = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      addView(buttonRow); addView(volumeLabel); addView(volume)
-                  }
-
                   val toggle = Button(this).apply {
                       text = getString(R.string.btn_hide)
                       setOnClickListener {
-                          val visible = controls.visibility == View.VISIBLE
-                          controls.visibility = if (visible) View.GONE else View.VISIBLE
+                          val visible = buttonRow.visibility == View.VISIBLE
+                          buttonRow.visibility = if (visible) View.GONE else View.VISIBLE
                           text = getString(if (visible) R.string.btn_show else R.string.btn_hide)
                       }
                   }
@@ -735,7 +1174,7 @@ jobs:
                   val container = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setBackgroundColor(0xCC000000.toInt())
-                      addView(subtitleTextView); addView(toggle); addView(controls)
+                      addView(subtitleTextView); addView(toggle); addView(buttonRow)
                   }
 
                   val params = WindowManager.LayoutParams(
@@ -746,8 +1185,8 @@ jobs:
                       PixelFormat.TRANSLUCENT
                   ).apply {
                       gravity = Gravity.TOP or Gravity.START
-                      x = p.getInt("x", (metrics.widthPixels * 0.03f).toInt())
-                      y = p.getInt("y", metrics.heightPixels / 2)
+                      x = if (settings.overlayX < 0) (metrics.widthPixels * 0.03f).toInt() else settings.overlayX
+                      y = if (settings.overlayY < 0) metrics.heightPixels / 2 else settings.overlayY
                   }
 
                   var downX = 0f; var downY = 0f; var startX = 0; var startY = 0
@@ -764,18 +1203,15 @@ jobs:
                               true
                           }
                           MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                              p.edit().putInt("x", params.x).putInt("y", params.y).apply(); true
+                              settings.overlayX = params.x; settings.overlayY = params.y; true
                           }
                           else -> false
                       }
                   }
 
-                  // FIX #3: no swallow silencioso, reportar si falla
                   try {
                       wm.addView(container, params)
-                      overlay = container
-                      subtitleView = subtitleTextView
-                      windowParams = params
+                      overlay = container; subtitleView = subtitleTextView; windowParams = params
                   } catch (e: Exception) {
                       showToast(getString(R.string.msg_overlay_fail, e.message ?: "?"))
                   }
@@ -783,23 +1219,17 @@ jobs:
 
               private fun showToast(msg: String) {
                   mainHandler.post {
-                      try { Toast.makeText(this@CaptureService, msg, Toast.LENGTH_LONG).show() }
-                      catch (_: Exception) {}
+                      try { Toast.makeText(this@CaptureService, msg, Toast.LENGTH_LONG).show() } catch (_: Exception) {}
                   }
-              }
-
-              private fun changeSize(newSize: Int) {
-                  sizeIndex = newSize.coerceIn(0, sizes.lastIndex)
-                  subtitleView?.textSize = sizes[sizeIndex]
-                  getSharedPreferences("overlay", MODE_PRIVATE).edit().putInt("size", sizeIndex).apply()
               }
 
               private fun showSubtitle(text: String) {
                   mainHandler.post { if (running.get()) subtitleView?.text = text }
               }
 
-              private fun loadModel(languageCode: String, modelName: String): Model {
-                  val dir = File(filesDir, "vosk-$languageCode")
+              private fun loadModel(source: LanguageOption): Model {
+                  val dir = File(filesDir, "vosk-${source.code}${if (settings.useLargeModel) "-large" else ""}")
+                  val modelName = if (settings.useLargeModel) source.largeModel else source.smallModel
                   if (!File(dir, "am").isDirectory) downloadModel(dir, modelName)
                   return try { Model(dir.absolutePath) } catch (_: Exception) {
                       dir.deleteRecursively(); downloadModel(dir, modelName); Model(dir.absolutePath)
@@ -819,7 +1249,7 @@ jobs:
                       while (entry != null) {
                           val out = File(tempDir, entry.name)
                           if (!out.canonicalPath.startsWith(tempDir.canonicalPath + File.separator)) {
-                              throw SecurityException("Zip unsafe")
+                              throw SecurityException("Zip inseguro")
                           }
                           if (entry.isDirectory) out.mkdirs()
                           else { out.parentFile?.mkdirs(); out.outputStream().use { zip.copyTo(it) } }
@@ -859,6 +1289,7 @@ jobs:
                   projection = null
                   try { translator?.close() } catch (_: Exception) {}
                   translator = null
+                  deepL = null
                   try { tts?.stop() } catch (_: Exception) {}
                   try { tts?.shutdown() } catch (_: Exception) {}
                   tts = null; ttsReady = false
@@ -869,7 +1300,16 @@ jobs:
               }
 
               override fun onDestroy() {
-                  cleanup(); scope.cancel(); super.onDestroy()
+                  // Export SRT si está activado
+                  try {
+                      if (::settings.isInitialized && settings.autoExportSrt && subtitleLog.isNotEmpty()) {
+                          val path = SrtExporter.save(this, subtitleLog)
+                          showToast(getString(R.string.msg_srt_saved, path))
+                      }
+                  } catch (_: Exception) {}
+                  cleanup()
+                  scope.cancel()
+                  super.onDestroy()
               }
           }
           __EOF__
@@ -882,7 +1322,7 @@ jobs:
       - name: Compilar APK (release con R8)
         env:
           VERSION_CODE: ${{ github.run_number }}
-          VERSION_NAME: "2.2.${{ github.run_number }}"
+          VERSION_NAME: "3.0.${{ github.run_number }}"
         run: gradle assembleRelease --stacktrace
 
       - name: Publicar APK
