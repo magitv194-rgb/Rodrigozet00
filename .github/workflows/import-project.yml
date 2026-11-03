@@ -79,7 +79,7 @@ jobs:
                   minSdk = 29
                   targetSdk = 34
                   versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-                  versionName = System.getenv("VERSION_NAME") ?: "3.1.0"
+                  versionName = System.getenv("VERSION_NAME") ?: "3.2.0"
                   resourceConfigurations += listOf("es", "en")
               }
 
@@ -114,6 +114,7 @@ jobs:
               implementation("com.alphacephei:vosk-android:0.3.75@aar")
               implementation("net.java.dev.jna:jna:5.14.0@aar")
               implementation("com.google.mlkit:translate:17.0.3")
+              implementation("com.google.android.gms:play-services-tasks:18.2.0")
           }
           __EOF__
 
@@ -128,8 +129,10 @@ jobs:
               <string name="btn_stop">Detener</string>
               <string name="btn_settings">Ajustes</string>
               <string name="msg_preparing">Preparando subtítulos…</string>
-              <string name="msg_downloading_model">Descargando modelo…</string>
-              <string name="msg_preparing_translation">Preparando traducción…</string>
+              <string name="msg_downloading_model">Descargando modelo de voz…</string>
+              <string name="msg_downloading_translation">Descargando idioma de traducción… (%1$d%%)</string>
+              <string name="msg_translation_ready">✅ Idioma descargado y verificado. Escuchando…</string>
+              <string name="msg_translation_failed">Error al descargar idioma. Revisa tu internet.</string>
               <string name="msg_listening">Escuchando audio… (Nivel: %1$d)</string>
               <string name="msg_listening_plus">Escuchando audio…</string>
               <string name="msg_translation_error">Error de traducción</string>
@@ -891,9 +894,7 @@ jobs:
               private var lastOriginal = ""
               private var lastTranslated: String? = null
 
-              // Variables para controlar la nueva lógica de frases
               private var lastPartialText = ""
-              private var lastPartialTime = 0L
               private var partialJob: Job? = null
 
               override fun onBind(intent: Intent?): IBinder? = null
@@ -950,8 +951,16 @@ jobs:
                   if (tts == null) tts = TextToSpeech(this, this) else applyTtsSettings()
                   createOverlay()
 
+                  setupTranslator(source, target)
+
+                  captureJob = scope.launch { runCaptureLoop(source) }
+                  return START_STICKY
+              }
+
+              private fun setupTranslator(source: LanguageOption, target: LanguageOption) {
                   if (source.translateCode == target.translateCode) {
                       modelReady = true
+                      showSubtitle(getString(R.string.msg_listening_plus))
                   } else if (settings.translatorMode == "deepl" && settings.deeplApiKey.isNotBlank()) {
                       deepL = DeepLClient(settings.deeplApiKey)
                       modelReady = true
@@ -962,19 +971,48 @@ jobs:
                               .setSourceLanguage(source.translateCode)
                               .setTargetLanguage(target.translateCode).build()
                       )
-                      showSubtitle(getString(R.string.msg_preparing_translation))
-                      translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
-                          ?.addOnSuccessListener {
-                              modelReady = true
-                              showSubtitle(getString(R.string.msg_listening_plus))
+                      
+                      // Mostrar progreso simulado de descarga
+                      scope.launch {
+                          var progress = 0
+                          val progressJob = launch {
+                              while (isActive && progress < 95) {
+                                  kotlinx.coroutines.delay(1000)
+                                  progress += 15
+                                  if (progress > 95) progress = 95
+                                  showSubtitle(getString(R.string.msg_downloading_translation, progress))
+                              }
                           }
-                          ?.addOnFailureListener {
-                              showSubtitle(getString(R.string.msg_translation_error) + ": " + (it.message ?: ""))
-                          }
-                  }
 
-                  captureJob = scope.launch { runCaptureLoop(source) }
-                  return START_STICKY
+                          translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
+                              ?.addOnSuccessListener {
+                                  // Verificación real: intentar traducir algo
+                                  translator?.translate("test")
+                                      ?.addOnSuccessListener {
+                                          progressJob.cancel()
+                                          modelReady = true
+                                          showSubtitle(getString(R.string.msg_translation_ready))
+                                          mainHandler.post { 
+                                              Toast.makeText(this@CaptureService, "✅ Idioma listo para usar", Toast.LENGTH_LONG).show() 
+                                          }
+                                      }
+                                      ?.addOnFailureListener {
+                                          progressJob.cancel()
+                                          showSubtitle(getString(R.string.msg_translation_failed))
+                                          mainHandler.post { 
+                                              Toast.makeText(this@CaptureService, "Error al verificar idioma", Toast.LENGTH_LONG).show() 
+                                          }
+                                      }
+                              }
+                              ?.addOnFailureListener { e ->
+                                  progressJob.cancel()
+                                  showSubtitle(getString(R.string.msg_translation_failed) + ": " + e.message)
+                                  mainHandler.post { 
+                                      Toast.makeText(this@CaptureService, "Error de red al descargar idioma", Toast.LENGTH_LONG).show() 
+                                  }
+                              }
+                      }
+                  }
               }
 
               private fun createInternalRecord(): AudioRecord {
@@ -1098,21 +1136,12 @@ jobs:
                           if (recognized.isNotBlank() && recognized != lastRecognized) {
                               lastRecognized = recognized
                               if (isFinal) {
-                                  // Es una frase completa: traducir y hablar YA
                                   partialJob?.cancel()
+                                  // Solo procesar (traducir y hablar) cuando la frase esté completa
                                   processText(recognized, true, source)
                               } else {
-                                  // Es un parcial: mostrar rápido y programar traducción si se estanca
+                                  // Mostrar texto parcial instantáneamente para que el usuario vea que "toma las palabras"
                                   showSubtitleThrottled(recognized, false)
-                                  
-                                  // Lógica para traducir el parcial si el usuario hace una pausa larga (ej. 1 seg)
-                                  partialJob?.cancel()
-                                  partialJob = scope.launch {
-                                      kotlinx.coroutines.delay(800)
-                                      if (running.get()) {
-                                          processText(recognized, false, source)
-                                      }
-                                  }
                               }
                           }
                       }
@@ -1198,7 +1227,6 @@ jobs:
               private fun speak(text: String) {
                   if (!settings.voiceEnabled || !ttsReady || text.isBlank()) return
                   
-                  // Forzar el volumen del stream de música al máximo para que se escuche bien
                   val audioManager = getSystemService(AudioManager::class.java)
                   val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                   audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
@@ -1208,7 +1236,7 @@ jobs:
                       putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
                   }
                   
-                  // QUEUE_ADD en vez de QUEUE_FLUSH para que no corte la palabra a la mitad
+                  // QUEUE_ADD para que termine de decir la frase sin cortarse
                   tts?.speak(text, TextToSpeech.QUEUE_ADD, params, "sub-${System.currentTimeMillis()}")
               }
 
@@ -1347,7 +1375,7 @@ jobs:
                   } catch (e: Exception) {
                       if (settings.useLargeModel) {
                           mainHandler.post { showToast(getString(R.string.msg_oom_error)) }
-                          settings.useLargeModel = false // Fallback al modelo pequeño
+                          settings.useLargeModel = false
                           val smallDir = File(filesDir, "vosk-${source.code}")
                           if (!File(smallDir, "am").isDirectory) downloadModel(smallDir, source.smallModel)
                           try { Model(smallDir.absolutePath) } catch (_: Exception) {
@@ -1450,7 +1478,7 @@ jobs:
       - name: Compilar APK (release con R8)
         env:
           VERSION_CODE: ${{ github.run_number }}
-          VERSION_NAME: "3.1.${{ github.run_number }}"
+          VERSION_NAME: "3.2.${{ github.run_number }}"
         run: gradle assembleRelease --stacktrace
 
       - name: Publicar APK
