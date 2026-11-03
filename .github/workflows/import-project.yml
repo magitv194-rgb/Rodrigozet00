@@ -77,7 +77,7 @@ jobs:
                   minSdk = 29
                   targetSdk = 34
                   versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-                  versionName = System.getenv("VERSION_NAME") ?: "4.1.0"
+                  versionName = System.getenv("VERSION_NAME") ?: "4.2.0"
                   resourceConfigurations += listOf("es", "en")
               }
 
@@ -131,17 +131,14 @@ jobs:
               <string name="msg_listening_plus">Escuchando audio…</string>
               <string name="msg_capture_error">Error de captura</string>
               <string name="msg_capture_retry">Reintentando captura de audio…</string>
-              <string name="msg_oom_error">Memoria insuficiente para el modelo de voz. Intenta cerrar otras apps.</string>
+              <string name="msg_oom_error">Memoria insuficiente. Revisa el historial de errores.</string>
               <string name="msg_overlay_fail">No se pudo mostrar la ventana: %1$s</string>
               <string name="msg_overlay_perm">Falta el permiso de superposición</string>
               <string name="msg_srt_saved">Subtítulos guardados en %1$s</string>
-              <string name="btn_voice_on">Voz: Sí</string>
-              <string name="btn_voice_off">Voz: No</string>
               <string name="btn_smaller">A−</string>
               <string name="btn_larger">A+</string>
               <string name="btn_hide">▼</string>
               <string name="btn_show">▲</string>
-              <string name="volume_label">Volumen: %1$d%%</string>
               <string name="notif_title">Subtítulos Live está activo</string>
               <string name="notif_channel">Subtítulos Live</string>
           </resources>
@@ -214,6 +211,10 @@ jobs:
                       android:configChanges="orientation|screenSize|keyboardHidden"
                       android:exported="false"
                       android:label="@string/btn_settings" />
+                  <activity
+                      android:name=".ErrorLogActivity"
+                      android:exported="false"
+                      android:label="Historial de Errores" />
                   <service
                       android:name=".CaptureService"
                       android:configChanges="orientation|screenSize|keyboardHidden"
@@ -240,6 +241,46 @@ jobs:
           )
           __EOF__
 
+          cat > app/src/main/java/com/subtitulos/live/ErrorLogger.kt <<'__EOF__'
+          package com.subtitulos.live
+
+          import android.content.Context
+          import java.io.File
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+
+          object ErrorLogger {
+              private const val FILE_NAME = "error_history.txt"
+
+              fun log(context: Context, tag: String, message: String, e: Throwable? = null) {
+                  try {
+                      val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                      val stackTrace = e?.stackTraceToString() ?: ""
+                      val logLine = "[$time] [$tag] $message\n$stackTrace\n\n"
+                      
+                      val file = File(context.filesDir, FILE_NAME)
+                      if (file.exists() && file.length() > 100_000) {
+                          file.delete()
+                      }
+                      file.appendText(logLine)
+                  } catch (_: Exception) {}
+              }
+
+              fun getLogs(context: Context): String {
+                  val file = File(context.filesDir, FILE_NAME)
+                  return if (file.exists()) file.readText() else "No hay errores registrados aún."
+              }
+
+              fun clearLogs(context: Context) {
+                  try {
+                      val file = File(context.filesDir, FILE_NAME)
+                      if (file.exists()) file.delete()
+                  } catch (_: Exception) {}
+              }
+          }
+          __EOF__
+
           cat > app/src/main/java/com/subtitulos/live/AppSettings.kt <<'__EOF__'
           package com.subtitulos.live
 
@@ -260,18 +301,6 @@ jobs:
               var audioFilter: String
                   get() = prefs.getString("audio_filter", "all") ?: "all"
                   set(v) = prefs.edit().putString("audio_filter", v).apply()
-
-              var voiceEnabled: Boolean
-                  get() = prefs.getBoolean("voice_enabled", true)
-                  set(v) = prefs.edit().putBoolean("voice_enabled", v).apply()
-
-              var ttsSpeed: Float
-                  get() = prefs.getFloat("tts_speed", 1.0f)
-                  set(v) = prefs.edit().putFloat("tts_speed", v).apply()
-
-              var ttsVolume: Int
-                  get() = prefs.getInt("tts_volume", 100)
-                  set(v) = prefs.edit().putInt("tts_volume", v).apply()
 
               var subtitleSizeIndex: Int
                   get() = prefs.getInt("sub_size", 2)
@@ -440,6 +469,12 @@ jobs:
               ) { grants -> if (grants[Manifest.permission.RECORD_AUDIO] == true) continueStart() }
 
               override fun onCreate(savedInstanceState: Bundle?) {
+                  Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                      ErrorLogger.log(this, "CRASH", "Error fatal en hilo ${thread.name}", throwable)
+                      android.os.Process.killProcess(android.os.Process.myPid())
+                      System.exit(1)
+                  }
+
                   settings = AppSettings(this)
                   applyTheme()
                   super.onCreate(savedInstanceState)
@@ -533,9 +568,75 @@ jobs:
           }
           __EOF__
 
+          cat > app/src/main/java/com/subtitulos/live/ErrorLogActivity.kt <<'__EOF__'
+          package com.subtitulos.live
+
+          import android.os.Bundle
+          import android.view.Gravity
+          import android.view.ViewGroup
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+          import com.google.android.material.button.MaterialButton
+
+          class ErrorLogActivity : AppCompatActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(32, 32, 32, 32)
+                  }
+
+                  val title = TextView(this).apply {
+                      text = "Historial de Fallos"; textSize = 22f
+                      setPadding(0, 0, 0, 16)
+                  }
+
+                  val logs = ErrorLogger.getLogs(this)
+                  val textView = TextView(this).apply {
+                      text = logs
+                      textSize = 12f
+                      setTextIsSelectable(true)
+                  }
+
+                  val scrollView = ScrollView(this).apply {
+                      addView(textView)
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+                      )
+                  }
+
+                  val clearBtn = MaterialButton(this).apply {
+                      text = "Borrar Historial"
+                      setOnClickListener {
+                          ErrorLogger.clearLogs(this@ErrorLogActivity)
+                          textView.text = "No hay errores registrados aún."
+                      }
+                  }
+
+                  val backBtn = MaterialButton(this).apply {
+                      text = "Volver"
+                      setOnClickListener { finish() }
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = 8 }
+                  }
+
+                  root.addView(title)
+                  root.addView(scrollView)
+                  root.addView(clearBtn)
+                  root.addView(backBtn)
+                  setContentView(root)
+              }
+          }
+          __EOF__
+
           cat > app/src/main/java/com/subtitulos/live/SettingsActivity.kt <<'__EOF__'
           package com.subtitulos.live
 
+          import android.content.Intent
           import android.os.Bundle
           import android.view.Gravity
           import android.view.ViewGroup
@@ -607,17 +708,6 @@ jobs:
                   }
                   root.addView(audioGroup)
 
-                  section("Voz (TTS)")
-                  root.addView(switchRow("Leer en voz alta", settings.voiceEnabled) {
-                      settings.voiceEnabled = it
-                  })
-                  root.addView(sliderRow("Velocidad", 5f, 20f, settings.ttsSpeed * 10f) { v ->
-                      settings.ttsSpeed = v / 10f
-                  })
-                  root.addView(sliderRow("Volumen", 0f, 100f, settings.ttsVolume.toFloat()) { v ->
-                      settings.ttsVolume = v.toInt()
-                  })
-
                   section("Subtítulos")
                   val modeGroup = RadioGroup(this)
                   val bothSubRadio = RadioButton(this).apply { text = "Original + traducción"; id = 1 }
@@ -659,13 +749,22 @@ jobs:
                       settings.autoExportSrt = it
                   })
 
+                  section("Solución de problemas")
+                  root.addView(MaterialButton(this).apply {
+                      text = "Ver historial de fallos"
+                      setOnClickListener {
+                          startActivity(Intent(this@SettingsActivity, ErrorLogActivity::class.java))
+                      }
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      ).apply { topMargin = 8 }
+                  })
+
                   root.addView(MaterialButton(this).apply {
                       text = "Restablecer valores"
                       setOnClickListener {
                           settings.audioFilter = "all"
-                          settings.voiceEnabled = true
-                          settings.ttsSpeed = 1.0f
-                          settings.ttsVolume = 100
                           settings.subtitleMode = "both"
                           settings.subtitleSizeIndex = 2
                           settings.themeMode = "auto"
@@ -747,7 +846,6 @@ jobs:
           import android.graphics.PixelFormat
           import android.media.AudioAttributes
           import android.media.AudioFormat
-          import android.media.AudioManager
           import android.media.AudioRecord
           import android.media.MediaRecorder
           import android.media.audiofx.AcousticEchoCanceler
@@ -758,7 +856,6 @@ jobs:
           import android.os.IBinder
           import android.os.Looper
           import android.provider.Settings
-          import android.speech.tts.TextToSpeech
           import android.view.Gravity
           import android.view.MotionEvent
           import android.view.View
@@ -781,13 +878,12 @@ jobs:
           import org.vosk.Recognizer
           import java.io.File
           import java.io.IOException
-          import java.util.Locale
           import java.util.concurrent.TimeUnit
           import java.util.concurrent.atomic.AtomicBoolean
           import java.util.zip.ZipInputStream
           import kotlin.math.abs
 
-          class CaptureService : Service(), TextToSpeech.OnInitListener {
+          class CaptureService : Service() {
 
               private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
               private val mainHandler = Handler(Looper.getMainLooper())
@@ -805,9 +901,6 @@ jobs:
               private var windowParams: WindowManager.LayoutParams? = null
 
               private var googleTranslate: GoogleTranslateClient? = null
-              private var tts: TextToSpeech? = null
-              private var ttsReady = false
-              private var targetLocale = Locale("es")
               private var lastRecognized = ""
               private var lastUiUpdate = 0L
               private val sizes = floatArrayOf(14f, 18f, 22f, 28f, 36f, 46f)
@@ -822,22 +915,6 @@ jobs:
 
               override fun onBind(intent: Intent?): IBinder? = null
 
-              override fun onInit(status: Int) {
-                  ttsReady = status == TextToSpeech.SUCCESS
-                  if (ttsReady) applyTtsSettings()
-              }
-
-              private fun applyTtsSettings() {
-                  try {
-                      tts?.language = targetLocale
-                      tts?.setSpeechRate(settings.ttsSpeed)
-                      val voices = tts?.voices ?: return
-                      val best = voices.filter { it.locale.language == targetLocale.language }
-                          .maxByOrNull { it.quality }
-                      if (best != null && !best.isNetworkConnectionRequired) tts?.voice = best
-                  } catch (_: Exception) {}
-              }
-
               override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
                   if (intent == null) return START_NOT_STICKY
                   cleanup()
@@ -845,8 +922,6 @@ jobs:
                   settings = AppSettings(this)
 
                   val source = LANGS[settings.sourceLang] ?: LANGS.values.first()
-                  val target = LANGS[settings.targetLang] ?: LANGS.values.first()
-                  targetLocale = target.ttsLocale
                   sessionStart = System.currentTimeMillis()
                   lastFinalTime = sessionStart
                   lastOriginal = ""
@@ -861,7 +936,11 @@ jobs:
                   } else {
                       @Suppress("DEPRECATION") intent.getParcelableExtra<Intent>("projectionData")
                   }
-                  if (data == null) { stopSelf(); return START_NOT_STICKY }
+                  if (data == null) { 
+                      ErrorLogger.log(this, "SERVICE", "No se recibieron los datos de MediaProjection")
+                      stopSelf()
+                      return START_NOT_STICKY 
+                  }
 
                   projection = getSystemService(MediaProjectionManager::class.java)
                       .getMediaProjection(intent.getIntExtra("resultCode", 0), data)
@@ -869,7 +948,6 @@ jobs:
                       override fun onStop() { stopSelf() }
                   }, mainHandler)
 
-                  if (tts == null) tts = TextToSpeech(this, this) else applyTtsSettings()
                   googleTranslate = GoogleTranslateClient()
                   createOverlay()
 
@@ -935,7 +1013,10 @@ jobs:
                                   showSubtitle(getString(R.string.msg_capture_retry))
                                   Thread.sleep(500)
                                   internalAudioRecord = createInternalRecord()
-                              } else throw e
+                              } else {
+                                  ErrorLogger.log(this, "AUDIO", "Error creando AudioRecord interno", e)
+                                  throw e
+                              }
                           }
                       }
 
@@ -1008,12 +1089,12 @@ jobs:
                           }
                       }
                   } catch (e: Throwable) {
-                      if (running.get()) {
-                          if (e is OutOfMemoryError) {
-                              showSubtitle(getString(R.string.msg_oom_error))
-                          } else {
-                              showSubtitle(getString(R.string.msg_capture_error) + ": " + (e.localizedMessage ?: "?"))
-                          }
+                      if (e is OutOfMemoryError) {
+                          ErrorLogger.log(this, "OOM", "Out of Memory cargando modelo o procesando audio", e)
+                          showSubtitle(getString(R.string.msg_oom_error))
+                      } else {
+                          ErrorLogger.log(this, "CAPTURE", "Error en bucle de captura", e)
+                          showSubtitle(getString(R.string.msg_capture_error) + ": " + (e.localizedMessage ?: "?"))
                       }
                   } finally {
                       try { internalAudioRecord?.stop() } catch (_: Exception) {}
@@ -1030,14 +1111,14 @@ jobs:
 
                   if (source.code == target.code) {
                       showSubtitleThrottled(formatSubtitle(text, null), isFinal)
-                      if (isFinal) { recordEntry(text, null); speak(text) }
+                      if (isFinal) { recordEntry(text, null) }
                       return
                   }
 
                   val gt = googleTranslate
                   if (gt == null) {
                       showSubtitleThrottled(formatSubtitle(text, null), isFinal)
-                      if (isFinal) { recordEntry(text, null); speak(text) }
+                      if (isFinal) { recordEntry(text, null) }
                       return
                   }
                   
@@ -1047,9 +1128,10 @@ jobs:
                           mainHandler.post {
                               if (!running.get()) return@post
                               showSubtitleThrottled(formatSubtitle(text, translated), isFinal)
-                              if (isFinal) { recordEntry(text, translated); speak(translated) }
+                              if (isFinal) { recordEntry(text, translated) }
                           }
-                      } catch (_: Exception) {
+                      } catch (e: Exception) {
+                          ErrorLogger.log(this@CaptureService, "TRANSLATE", "Error al traducir texto", e)
                           mainHandler.post {
                               if (running.get()) showSubtitleThrottled(formatSubtitle(text, null), isFinal)
                           }
@@ -1078,21 +1160,6 @@ jobs:
               private fun showSubtitleThrottled(text: String, force: Boolean) {
                   val now = System.currentTimeMillis()
                   if (force || now - lastUiUpdate > 120) { lastUiUpdate = now; showSubtitle(text) }
-              }
-
-              private fun speak(text: String) {
-                  if (!settings.voiceEnabled || !ttsReady || text.isBlank()) return
-                  
-                  val audioManager = getSystemService(AudioManager::class.java)
-                  val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                  audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
-
-                  val params = android.os.Bundle().apply {
-                      putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, settings.ttsVolume / 100f)
-                      putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
-                  }
-                  
-                  tts?.speak(text, TextToSpeech.QUEUE_ADD, params, "sub-${System.currentTimeMillis()}")
               }
 
               private fun startForegroundNotification() {
@@ -1135,14 +1202,6 @@ jobs:
                           subtitleTextView.textSize = sizes[settings.subtitleSizeIndex]
                       }
                   }
-                  val voice = Button(this).apply {
-                      text = if (settings.voiceEnabled) getString(R.string.btn_voice_on) else getString(R.string.btn_voice_off)
-                      setOnClickListener {
-                          settings.voiceEnabled = !settings.voiceEnabled
-                          text = if (settings.voiceEnabled) getString(R.string.btn_voice_on) else getString(R.string.btn_voice_off)
-                          if (!settings.voiceEnabled) try { tts?.stop() } catch (_: Exception) {}
-                      }
-                  }
                   val stop = Button(this).apply {
                       text = getString(R.string.btn_stop)
                       setOnClickListener { stopSelf() }
@@ -1152,7 +1211,7 @@ jobs:
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER
                       setBackgroundColor(0xEE171717.toInt())
-                      addView(smaller); addView(larger); addView(voice); addView(stop)
+                      addView(smaller); addView(larger); addView(stop)
                   }
 
                   val toggle = Button(this).apply {
@@ -1206,6 +1265,7 @@ jobs:
                       wm.addView(container, params)
                       overlay = container; subtitleView = subtitleTextView; windowParams = params
                   } catch (e: Exception) {
+                      ErrorLogger.log(this, "OVERLAY", "Error al añadir vista", e)
                       showToast(getString(R.string.msg_overlay_fail, e.message ?: "?"))
                   }
               }
@@ -1228,9 +1288,10 @@ jobs:
                       Model(dir.absolutePath)
                   } catch (e: Throwable) {
                       if (e is OutOfMemoryError) {
-                          mainHandler.post { showToast(getString(R.string.msg_oom_error)) }
+                          ErrorLogger.log(this, "VOSK", "OutOfMemoryError al cargar modelo local", e)
                           throw e
                       }
+                      ErrorLogger.log(this, "VOSK", "Error al cargar modelo, reintentando descarga", e as? Exception)
                       dir.deleteRecursively()
                       downloadModel(dir, source.model)
                       Model(dir.absolutePath)
@@ -1280,6 +1341,7 @@ jobs:
                       }
                   } catch (e: Exception) {
                       zipFile.delete()
+                      ErrorLogger.log(this, "DOWNLOAD", "Error descargando modelo de voz", e)
                       throw e
                   }
                   
@@ -1304,6 +1366,7 @@ jobs:
                   } catch (e: Exception) {
                       zipFile.delete()
                       tempDir.deleteRecursively()
+                      ErrorLogger.log(this, "UNZIP", "Error extrayendo ZIP del modelo", e)
                       throw e
                   }
                   
@@ -1345,9 +1408,6 @@ jobs:
                   try { projection?.stop() } catch (_: Exception) {}
                   projection = null
                   googleTranslate = null
-                  try { tts?.stop() } catch (_: Exception) {}
-                  try { tts?.shutdown() } catch (_: Exception) {}
-                  tts = null; ttsReady = false
                   try {
                       overlay?.let { getSystemService(WindowManager::class.java).removeView(it) }
                   } catch (_: Exception) {}
@@ -1376,7 +1436,7 @@ jobs:
       - name: Compilar APK (release con R8)
         env:
           VERSION_CODE: ${{ github.run_number }}
-          VERSION_NAME: "4.1.${{ github.run_number }}"
+          VERSION_NAME: "4.2.${{ github.run_number }}"
         run: gradle assembleRelease --stacktrace
 
       - name: Publicar APK
