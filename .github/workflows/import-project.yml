@@ -58,8 +58,6 @@ jobs:
           -keep class com.sun.jna.** { *; }
           -dontwarn org.vosk.**
           -dontwarn com.sun.jna.**
-          -keep class com.google.mlkit.** { *; }
-          -dontwarn com.google.mlkit.**
           -keep class okhttp3.** { *; }
           -dontwarn okhttp3.**
           __EOF__
@@ -79,7 +77,7 @@ jobs:
                   minSdk = 29
                   targetSdk = 34
                   versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-                  versionName = System.getenv("VERSION_NAME") ?: "3.4.0"
+                  versionName = System.getenv("VERSION_NAME") ?: "4.1.0"
                   resourceConfigurations += listOf("es", "en")
               }
 
@@ -113,8 +111,6 @@ jobs:
               implementation("com.squareup.okhttp3:okhttp:4.12.0")
               implementation("com.alphacephei:vosk-android:0.3.75@aar")
               implementation("net.java.dev.jna:jna:5.14.0@aar")
-              implementation("com.google.mlkit:translate:17.0.3")
-              implementation("com.google.android.gms:play-services-tasks:18.2.0")
           }
           __EOF__
 
@@ -129,18 +125,13 @@ jobs:
               <string name="btn_stop">Detener</string>
               <string name="btn_settings">Ajustes</string>
               <string name="msg_preparing">Preparando subtítulos…</string>
-              <string name="msg_downloading_model">Descargando modelo (%1$d%%)…</string>
+              <string name="msg_downloading_model">Descargando modelo de voz (%1$d%%)…</string>
               <string name="msg_extracting_model">Extrayendo modelo de voz…</string>
-              <string name="msg_downloading_translation">Descargando idioma de traducción… (%1$d%%)</string>
-              <string name="msg_translation_ready">✅ Idioma descargado y verificado. Escuchando…</string>
-              <string name="msg_translation_failed">Error al descargar idioma. Revisa tu internet.</string>
               <string name="msg_listening">Escuchando audio… (Nivel: %1$d)</string>
               <string name="msg_listening_plus">Escuchando audio…</string>
-              <string name="msg_translation_error">Error de traducción</string>
               <string name="msg_capture_error">Error de captura</string>
               <string name="msg_capture_retry">Reintentando captura de audio…</string>
               <string name="msg_oom_error">Memoria insuficiente para el modelo de voz. Intenta cerrar otras apps.</string>
-              <string name="msg_model_error">Error al cargar el modelo de voz. Revisa tu conexión a internet.</string>
               <string name="msg_overlay_fail">No se pudo mostrar la ventana: %1$s</string>
               <string name="msg_overlay_perm">Falta el permiso de superposición</string>
               <string name="msg_srt_saved">Subtítulos guardados en %1$s</string>
@@ -208,7 +199,7 @@ jobs:
                   android:icon="@mipmap/ic_launcher"
                   android:label="@string/app_name"
                   android:theme="@style/Theme.SubtitulosLive"
-                  android:usesCleartextTraffic="false">
+                  android:usesCleartextTraffic="true">
                   <activity
                       android:name=".MainActivity"
                       android:configChanges="orientation|screenSize|keyboardHidden"
@@ -235,27 +226,17 @@ jobs:
           cat > app/src/main/java/com/subtitulos/live/Languages.kt <<'__EOF__'
           package com.subtitulos.live
 
-          import com.google.mlkit.nl.translate.TranslateLanguage
           import java.util.Locale
 
           data class LanguageOption(
               val code: String,
               val model: String,
-              val translateCode: String,
               val ttsLocale: Locale
           )
 
-          fun deeplSource(code: String): String = when (code) {
-              "es" -> "ES"; "de" -> "DE"; else -> code.uppercase()
-          }
-
-          fun deeplTarget(code: String): String = when (code) {
-              "es" -> "ES"; "de" -> "DE"; else -> code.uppercase()
-          }
-
           val LANGS = linkedMapOf(
-              "Español" to LanguageOption("es", "vosk-model-es-0.42", TranslateLanguage.SPANISH, Locale("es")),
-              "Alemán" to LanguageOption("de", "vosk-model-de-0.21", TranslateLanguage.GERMAN, Locale.GERMANY)
+              "Español" to LanguageOption("es", "vosk-model-es-0.42", Locale("es")),
+              "Alemán" to LanguageOption("de", "vosk-model-de-0.21", Locale.GERMANY)
           )
           __EOF__
 
@@ -275,14 +256,6 @@ jobs:
               var targetLang: String
                   get() = prefs.getString("target_lang", "Español") ?: "Español"
                   set(v) = prefs.edit().putString("target_lang", v).apply()
-
-              var translatorMode: String
-                  get() = prefs.getString("translator_mode", "mlkit") ?: "mlkit"
-                  set(v) = prefs.edit().putString("translator_mode", v).apply()
-
-              var deeplApiKey: String
-                  get() = prefs.getString("deepl_api_key", "") ?: ""
-                  set(v) = prefs.edit().putString("deepl_api_key", v).apply()
 
               var audioFilter: String
                   get() = prefs.getString("audio_filter", "all") ?: "all"
@@ -326,37 +299,44 @@ jobs:
           }
           __EOF__
 
-          cat > app/src/main/java/com/subtitulos/live/DeepLClient.kt <<'__EOF__'
+          cat > app/src/main/java/com/subtitulos/live/GoogleTranslateClient.kt <<'__EOF__'
           package com.subtitulos.live
 
           import kotlinx.coroutines.Dispatchers
           import kotlinx.coroutines.withContext
-          import okhttp3.FormBody
           import okhttp3.OkHttpClient
           import okhttp3.Request
-          import org.json.JSONObject
+          import org.json.JSONArray
           import java.io.IOException
+          import java.net.URLEncoder
 
-          class DeepLClient(private val apiKey: String) {
+          class GoogleTranslateClient {
               private val client = OkHttpClient()
 
               suspend fun translate(text: String, sourceCode: String, targetCode: String): String =
                   withContext(Dispatchers.IO) {
-                      val url = "https://api-free.deepl.com/v2/translate"
-                      val body = FormBody.Builder()
-                          .add("text", text)
-                          .add("source_lang", deeplSource(sourceCode))
-                          .add("target_lang", deeplTarget(targetCode))
-                          .build()
-                      val req = Request.Builder()
+                      val encodedText = URLEncoder.encode(text, "UTF-8")
+                      val url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=$sourceCode&tl=$targetCode&dt=t&q=$encodedText"
+                      val request = Request.Builder()
                           .url(url)
-                          .addHeader("Authorization", "DeepL-Auth-Key $apiKey")
-                          .post(body)
+                          .addHeader("User-Agent", "Mozilla/5.0")
                           .build()
-                      client.newCall(req).execute().use { resp ->
-                          if (!resp.isSuccessful) throw IOException("DeepL ${resp.code}")
-                          val json = JSONObject(resp.body!!.string())
-                          json.getJSONArray("translations").getJSONObject(0).getString("text")
+
+                      client.newCall(request).execute().use { response ->
+                          if (!response.isSuccessful) throw IOException("Error de red: ${response.code}")
+                          val responseBody = response.body?.string() ?: throw IOException("Respuesta vacía")
+                          
+                          val jsonArray = JSONArray(responseBody)
+                          val translationsArray = jsonArray.getJSONArray(0)
+                          val sb = StringBuilder()
+                          
+                          for (i in 0 until translationsArray.length()) {
+                              val part = translationsArray.getJSONArray(i)
+                              if (part.length() > 0 && !part.isNull(0)) {
+                                  sb.append(part.getString(0))
+                              }
+                          }
+                          sb.toString()
                       }
                   }
           }
@@ -557,11 +537,8 @@ jobs:
           package com.subtitulos.live
 
           import android.os.Bundle
-          import android.text.Editable
-          import android.text.TextWatcher
           import android.view.Gravity
           import android.view.ViewGroup
-          import android.widget.EditText
           import android.widget.LinearLayout
           import android.widget.RadioButton
           import android.widget.RadioGroup
@@ -606,36 +583,6 @@ jobs:
                       text = "Ajustes"; textSize = 28f
                       setPadding(0, 0, 0, 32)
                   })
-
-                  section("Traducción")
-                  val trGroup = RadioGroup(this)
-                  val mlkitRadio = RadioButton(this).apply { text = "ML Kit (offline, gratis, ilimitado)"; id = 1 }
-                  val deeplRadio = RadioButton(this).apply { text = "DeepL (online, mejor calidad)"; id = 2 }
-                  trGroup.addView(mlkitRadio); trGroup.addView(deeplRadio)
-                  if (settings.translatorMode == "deepl") deeplRadio.isChecked = true else mlkitRadio.isChecked = true
-                  trGroup.setOnCheckedChangeListener { _, id ->
-                      settings.translatorMode = if (id == 2) "deepl" else "mlkit"
-                      buildUI()
-                  }
-                  root.addView(trGroup)
-
-                  if (settings.translatorMode == "deepl") {
-                      root.addView(TextView(this).apply {
-                          text = "API key de DeepL (regístrate gratis en deepl.com/pro-api)"
-                          textSize = 12f; setPadding(0, 8, 0, 8)
-                      })
-                      root.addView(EditText(this).apply {
-                          setText(settings.deeplApiKey)
-                          hint = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx"
-                          addTextChangedListener(object : TextWatcher {
-                              override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                              override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                              override fun afterTextChanged(s: Editable?) {
-                                  settings.deeplApiKey = s?.toString() ?: ""
-                              }
-                          })
-                      })
-                  }
 
                   section("Fuente de audio")
                   val audioGroup = RadioGroup(this)
@@ -715,8 +662,6 @@ jobs:
                   root.addView(MaterialButton(this).apply {
                       text = "Restablecer valores"
                       setOnClickListener {
-                          settings.translatorMode = "mlkit"
-                          settings.deeplApiKey = ""
                           settings.audioFilter = "all"
                           settings.voiceEnabled = true
                           settings.ttsSpeed = 1.0f
@@ -822,10 +767,6 @@ jobs:
           import android.widget.LinearLayout
           import android.widget.TextView
           import android.widget.Toast
-          import com.google.mlkit.common.model.DownloadConditions
-          import com.google.mlkit.nl.translate.Translation
-          import com.google.mlkit.nl.translate.Translator
-          import com.google.mlkit.nl.translate.TranslatorOptions
           import kotlinx.coroutines.CoroutineScope
           import kotlinx.coroutines.Dispatchers
           import kotlinx.coroutines.Job
@@ -863,10 +804,7 @@ jobs:
               private var subtitleView: TextView? = null
               private var windowParams: WindowManager.LayoutParams? = null
 
-              private var translator: Translator? = null
-              private var deepL: DeepLClient? = null
-              private var modelReady = false
-
+              private var googleTranslate: GoogleTranslateClient? = null
               private var tts: TextToSpeech? = null
               private var ttsReady = false
               private var targetLocale = Locale("es")
@@ -880,7 +818,6 @@ jobs:
               private var lastOriginal = ""
               private var lastTranslated: String? = null
 
-              private var lastPartialText = ""
               private var partialJob: Job? = null
 
               override fun onBind(intent: Intent?): IBinder? = null
@@ -915,8 +852,6 @@ jobs:
                   lastOriginal = ""
                   lastTranslated = null
                   lastRecognized = ""
-                  lastPartialText = ""
-                  modelReady = false
                   subtitleLog.clear()
 
                   startForegroundNotification()
@@ -935,68 +870,13 @@ jobs:
                   }, mainHandler)
 
                   if (tts == null) tts = TextToSpeech(this, this) else applyTtsSettings()
+                  googleTranslate = GoogleTranslateClient()
                   createOverlay()
 
-                  setupTranslator(source, target)
+                  showSubtitle(getString(R.string.msg_listening_plus))
 
                   captureJob = scope.launch { runCaptureLoop(source) }
                   return START_STICKY
-              }
-
-              private fun setupTranslator(source: LanguageOption, target: LanguageOption) {
-                  if (source.translateCode == target.translateCode) {
-                      modelReady = true
-                      showSubtitle(getString(R.string.msg_listening_plus))
-                  } else if (settings.translatorMode == "deepl" && settings.deeplApiKey.isNotBlank()) {
-                      deepL = DeepLClient(settings.deeplApiKey)
-                      modelReady = true
-                      showSubtitle(getString(R.string.msg_listening_plus))
-                  } else {
-                      translator = Translation.getClient(
-                          TranslatorOptions.Builder()
-                              .setSourceLanguage(source.translateCode)
-                              .setTargetLanguage(target.translateCode).build()
-                      )
-                      
-                      scope.launch {
-                          var progress = 0
-                          val progressJob = launch {
-                              while (isActive && progress < 95) {
-                                  kotlinx.coroutines.delay(1000)
-                                  progress += 15
-                                  if (progress > 95) progress = 95
-                                  showSubtitle(getString(R.string.msg_downloading_translation, progress))
-                              }
-                          }
-
-                          translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
-                              ?.addOnSuccessListener {
-                                  translator?.translate("test")
-                                      ?.addOnSuccessListener {
-                                          progressJob.cancel()
-                                          modelReady = true
-                                          showSubtitle(getString(R.string.msg_translation_ready))
-                                          mainHandler.post { 
-                                              Toast.makeText(this@CaptureService, "✅ Idioma listo para usar", Toast.LENGTH_LONG).show() 
-                                          }
-                                      }
-                                      ?.addOnFailureListener {
-                                          progressJob.cancel()
-                                          showSubtitle(getString(R.string.msg_translation_failed))
-                                          mainHandler.post { 
-                                              Toast.makeText(this@CaptureService, "Error al verificar idioma", Toast.LENGTH_LONG).show() 
-                                          }
-                                      }
-                              }
-                              ?.addOnFailureListener { e ->
-                                  progressJob.cancel()
-                                  showSubtitle(getString(R.string.msg_translation_failed) + ": " + e.message)
-                                  mainHandler.post { 
-                                      Toast.makeText(this@CaptureService, "Error de red al descargar idioma", Toast.LENGTH_LONG).show() 
-                                  }
-                              }
-                      }
-                  }
               }
 
               private fun createInternalRecord(): AudioRecord {
@@ -1154,38 +1034,26 @@ jobs:
                       return
                   }
 
-                  val dl = deepL
-                  if (dl != null) {
-                      scope.launch {
-                          try {
-                              val translated = dl.translate(text, source.code, target.code)
-                              mainHandler.post {
-                                  if (!running.get()) return@post
-                                  showSubtitleThrottled(formatSubtitle(text, translated), isFinal)
-                                  if (isFinal) { recordEntry(text, translated); speak(translated) }
-                              }
-                          } catch (_: Exception) {
-                              mainHandler.post {
-                                  if (running.get()) showSubtitleThrottled(formatSubtitle(text, null), isFinal)
-                              }
-                          }
-                      }
-                      return
-                  }
-
-                  val tr = translator
-                  if (tr == null || !modelReady) {
+                  val gt = googleTranslate
+                  if (gt == null) {
                       showSubtitleThrottled(formatSubtitle(text, null), isFinal)
                       if (isFinal) { recordEntry(text, null); speak(text) }
                       return
                   }
-                  tr.translate(text).addOnSuccessListener { translated ->
-                      if (running.get()) {
-                          showSubtitleThrottled(formatSubtitle(text, translated), isFinal)
-                          if (isFinal) { recordEntry(text, translated); speak(translated) }
+                  
+                  scope.launch {
+                      try {
+                          val translated = gt.translate(text, source.code, target.code)
+                          mainHandler.post {
+                              if (!running.get()) return@post
+                              showSubtitleThrottled(formatSubtitle(text, translated), isFinal)
+                              if (isFinal) { recordEntry(text, translated); speak(translated) }
+                          }
+                      } catch (_: Exception) {
+                          mainHandler.post {
+                              if (running.get()) showSubtitleThrottled(formatSubtitle(text, null), isFinal)
+                          }
                       }
-                  }.addOnFailureListener {
-                      showSubtitleThrottled(formatSubtitle(text, null), isFinal)
                   }
               }
 
@@ -1476,9 +1344,7 @@ jobs:
                   aec = null
                   try { projection?.stop() } catch (_: Exception) {}
                   projection = null
-                  try { translator?.close() } catch (_: Exception) {}
-                  translator = null
-                  deepL = null
+                  googleTranslate = null
                   try { tts?.stop() } catch (_: Exception) {}
                   try { tts?.shutdown() } catch (_: Exception) {}
                   tts = null; ttsReady = false
@@ -1510,7 +1376,7 @@ jobs:
       - name: Compilar APK (release con R8)
         env:
           VERSION_CODE: ${{ github.run_number }}
-          VERSION_NAME: "3.4.${{ github.run_number }}"
+          VERSION_NAME: "4.1.${{ github.run_number }}"
         run: gradle assembleRelease --stacktrace
 
       - name: Publicar APK
