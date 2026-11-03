@@ -79,7 +79,7 @@ jobs:
                   minSdk = 29
                   targetSdk = 34
                   versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-                  versionName = System.getenv("VERSION_NAME") ?: "3.0.1"
+                  versionName = System.getenv("VERSION_NAME") ?: "3.0.2"
                   resourceConfigurations += listOf("es", "en")
               }
 
@@ -134,6 +134,7 @@ jobs:
               <string name="msg_listening_plus">Escuchando audio…</string>
               <string name="msg_translation_error">Error de traducción</string>
               <string name="msg_capture_error">Error de captura</string>
+              <string name="msg_capture_retry">Reintentando captura de audio interno…</string>
               <string name="msg_overlay_fail">No se pudo mostrar la ventana: %1$s</string>
               <string name="msg_overlay_perm">Falta el permiso de superposición</string>
               <string name="msg_srt_saved">Subtítulos guardados en %1$s</string>
@@ -289,6 +290,7 @@ jobs:
                   get() = prefs.getString("deepl_api_key", "") ?: ""
                   set(v) = prefs.edit().putString("deepl_api_key", v).apply()
 
+              // Nuevo modo de audio: "all", "media", "games", "mic", "mic_internal"
               var audioFilter: String
                   get() = prefs.getString("audio_filter", "all") ?: "all"
                   set(v) = prefs.edit().putString("audio_filter", v).apply()
@@ -648,19 +650,26 @@ jobs:
                       })
                   }
 
-                  section("Audio a capturar")
+                  section("Fuente de audio")
                   val audioGroup = RadioGroup(this)
-                  val mediaRadio = RadioButton(this).apply { text = "Solo multimedia (música, vídeos)"; id = 1 }
-                  val gamesRadio = RadioButton(this).apply { text = "Multimedia + juegos"; id = 2 }
-                  val allRadio = RadioButton(this).apply { text = "Todo (incluye notificaciones)"; id = 3 }
-                  audioGroup.addView(mediaRadio); audioGroup.addView(gamesRadio); audioGroup.addView(allRadio)
+                  val internalRadio = RadioButton(this).apply { text = "Solo audio interno (multimedia)"; id = 1 }
+                  val micRadio = RadioButton(this).apply { text = "Solo micrófono (voz en vivo)"; id = 2 }
+                  val bothRadio = RadioButton(this).apply { text = "Micrófono + Audio interno (Mezcla)"; id = 3 }
+                  val allRadio = RadioButton(this).apply { text = "Todo (Multimedia + Juegos + Notificaciones)"; id = 4 }
+                  
+                  audioGroup.addView(internalRadio); audioGroup.addView(micRadio)
+                  audioGroup.addView(bothRadio); audioGroup.addView(allRadio)
+                  
                   when (settings.audioFilter) {
-                      "media" -> mediaRadio.isChecked = true
-                      "games" -> gamesRadio.isChecked = true
-                      else -> allRadio.isChecked = true
+                      "mic" -> micRadio.isChecked = true
+                      "mic_internal" -> bothRadio.isChecked = true
+                      "all" -> allRadio.isChecked = true
+                      else -> internalRadio.isChecked = true
                   }
                   audioGroup.setOnCheckedChangeListener { _, id ->
-                      settings.audioFilter = when (id) { 1 -> "media"; 2 -> "games"; else -> "all" }
+                      settings.audioFilter = when (id) { 
+                          2 -> "mic"; 3 -> "mic_internal"; 4 -> "all"; else -> "media" 
+                      }
                   }
                   root.addView(audioGroup)
 
@@ -677,14 +686,14 @@ jobs:
 
                   section("Subtítulos")
                   val modeGroup = RadioGroup(this)
-                  val bothRadio = RadioButton(this).apply { text = "Original + traducción"; id = 1 }
+                  val bothSubRadio = RadioButton(this).apply { text = "Original + traducción"; id = 1 }
                   val origRadio = RadioButton(this).apply { text = "Solo original"; id = 2 }
                   val transRadio = RadioButton(this).apply { text = "Solo traducción"; id = 3 }
-                  modeGroup.addView(bothRadio); modeGroup.addView(origRadio); modeGroup.addView(transRadio)
+                  modeGroup.addView(bothSubRadio); modeGroup.addView(origRadio); modeGroup.addView(transRadio)
                   when (settings.subtitleMode) {
                       "original" -> origRadio.isChecked = true
                       "translated" -> transRadio.isChecked = true
-                      else -> bothRadio.isChecked = true
+                      else -> bothSubRadio.isChecked = true
                   }
                   modeGroup.setOnCheckedChangeListener { _, id ->
                       settings.subtitleMode = when (id) { 2 -> "original"; 3 -> "translated"; else -> "both" }
@@ -808,6 +817,8 @@ jobs:
           import android.media.AudioAttributes
           import android.media.AudioFormat
           import android.media.AudioRecord
+          import android.media.MediaRecorder
+          import android.media.audiofx.AcousticEchoCanceler
           import android.media.projection.MediaProjection
           import android.media.projection.MediaProjectionManager
           import android.os.Build
@@ -843,6 +854,7 @@ jobs:
           import java.util.Locale
           import java.util.concurrent.atomic.AtomicBoolean
           import java.util.zip.ZipInputStream
+          import kotlin.math.abs
 
           class CaptureService : Service(), TextToSpeech.OnInitListener {
 
@@ -851,7 +863,9 @@ jobs:
               private val running = AtomicBoolean(false)
 
               private lateinit var settings: AppSettings
-              private var audioRecord: AudioRecord? = null
+              private var internalAudioRecord: AudioRecord? = null
+              private var micAudioRecord: AudioRecord? = null
+              private var aec: AcousticEchoCanceler? = null
               private var projection: MediaProjection? = null
               private var captureJob: Job? = null
 
@@ -956,44 +970,109 @@ jobs:
                   return START_STICKY
               }
 
-              private fun buildAudioConfig(): android.media.AudioPlaybackCaptureConfiguration {
+              private fun createInternalRecord(): AudioRecord {
                   val b = android.media.AudioPlaybackCaptureConfiguration.Builder(projection!!)
-                  b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                  b.addMatchingUsage(AudioAttributes.USAGE_GAME)
-                  b.addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
-                  b.addMatchingUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                  return b.build()
+                  when (settings.audioFilter) {
+                      "all" -> {
+                          b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                          b.addMatchingUsage(AudioAttributes.USAGE_GAME)
+                          b.addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                      }
+                      "media" -> b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                      else -> {
+                          b.addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                          b.addMatchingUsage(AudioAttributes.USAGE_GAME)
+                      }
+                  }
+                  val format = AudioFormat.Builder()
+                      .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                      .setSampleRate(16000)
+                      .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
+                  val minBuf = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                  return AudioRecord.Builder()
+                      .setAudioPlaybackCaptureConfig(b.build())
+                      .setAudioFormat(format)
+                      .setBufferSizeInBytes(maxOf(minBuf * 2, 32768)).build()
+              }
+
+              private fun createMicRecord(): AudioRecord {
+                  val format = AudioFormat.Builder()
+                      .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                      .setSampleRate(16000)
+                      .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
+                  val minBuf = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                  return AudioRecord.Builder()
+                      .setAudioSource(MediaRecorder.AudioSource.MIC)
+                      .setAudioFormat(format)
+                      .setBufferSizeInBytes(maxOf(minBuf * 2, 32768)).build()
               }
 
               private fun runCaptureLoop(source: LanguageOption) {
                   var recognizer: Recognizer? = null
-                  var recorder: AudioRecord? = null
                   try {
                       val model = loadModel(source)
                       if (!running.get()) return
                       recognizer = Recognizer(model, 16000.0f)
 
-                      val format = AudioFormat.Builder()
-                          .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                          .setSampleRate(16000)
-                          .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build()
-                      val minBuf = AudioRecord.getMinBufferSize(
-                          16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-                      recorder = AudioRecord.Builder()
-                          .setAudioPlaybackCaptureConfig(buildAudioConfig())
-                          .setAudioFormat(format)
-                          .setBufferSizeInBytes(maxOf(minBuf * 2, 32768)).build()
-                      audioRecord = recorder
-                      recorder.startRecording()
+                      val mode = settings.audioFilter
+                      val useInternal = mode != "mic"
+                      val useMic = mode == "mic" || mode == "mic_internal"
 
-                      val buffer = ByteArray(4096)
+                      // Reintento automático para el error de política de audio
+                      if (useInternal) {
+                          try {
+                              internalAudioRecord = createInternalRecord()
+                          } catch (e: Exception) {
+                              if (e.message?.contains("could not register audio policy") == true) {
+                                  showSubtitle(getString(R.string.msg_capture_retry))
+                                  Thread.sleep(500)
+                                  internalAudioRecord = createInternalRecord()
+                              } else throw e
+                          }
+                      }
+
+                      if (useMic) {
+                          micAudioRecord = createMicRecord()
+                          if (AcousticEchoCanceler.isAvailable()) {
+                              aec = AcousticEchoCanceler.create(micAudioRecord!!.audioSessionId)
+                              aec?.enabled = true
+                          }
+                      }
+
+                      internalAudioRecord?.startRecording()
+                      micAudioRecord?.startRecording()
+
+                      val bufferSize = 4096
+                      val internalBuffer = ByteArray(bufferSize)
+                      val micBuffer = ByteArray(bufferSize)
+                      val mixedBuffer = ByteArray(bufferSize)
+
                       while (running.get() && scope.isActive) {
-                          val count = recorder.read(buffer, 0, buffer.size)
-                          if (count <= 0) continue
+                          var bytesRead = 0
+                          if (useInternal && useMic) {
+                              val intRead = internalAudioRecord?.read(internalBuffer, 0, bufferSize) ?: 0
+                              val micRead = micAudioRecord?.read(micBuffer, 0, bufferSize) ?: 0
+                              bytesRead = minOf(intRead, micRead)
+                              if (bytesRead > 0) {
+                                  for (i in 0 until bytesRead step 2) {
+                                      val s1 = ((internalBuffer[i].toInt() and 0xFF) or (internalBuffer[i + 1].toInt() shl 8)).toShort()
+                                      val s2 = ((micBuffer[i].toInt() and 0xFF) or (micBuffer[i + 1].toInt() shl 8)).toShort()
+                                      val mixed = ((s1 + s2) / 2).toShort() // Mezcla simple promediada
+                                      mixedBuffer[i] = (mixed.toInt() and 0xFF).toByte()
+                                      mixedBuffer[i + 1] = ((mixed.toInt() shr 8) and 0xFF).toByte()
+                                  }
+                              }
+                          } else if (useInternal) {
+                              bytesRead = internalAudioRecord?.read(mixedBuffer, 0, bufferSize) ?: 0
+                          } else if (useMic) {
+                              bytesRead = micAudioRecord?.read(mixedBuffer, 0, bufferSize) ?: 0
+                          }
+
+                          if (bytesRead <= 0) continue
 
                           var maxAmplitude = 0
-                          for (i in 0 until count) {
-                              val abs = Math.abs(buffer[i].toInt())
+                          for (i in 0 until bytesRead) {
+                              val abs = abs(mixedBuffer[i].toInt())
                               if (abs > maxAmplitude) maxAmplitude = abs
                           }
                           if (System.currentTimeMillis() - lastUiUpdate > 500) {
@@ -1005,7 +1084,7 @@ jobs:
                               }
                           }
 
-                          val isFinal = recognizer.acceptWaveForm(buffer, count)
+                          val isFinal = recognizer.acceptWaveForm(mixedBuffer, bytesRead)
                           val json = JSONObject(if (isFinal) recognizer.result else recognizer.partialResult)
                           val key = if (isFinal) "text" else "partial"
                           val recognized = json.optString(key).trim()
@@ -1017,8 +1096,11 @@ jobs:
                   } catch (e: Exception) {
                       if (running.get()) showSubtitle(getString(R.string.msg_capture_error) + ": " + (e.localizedMessage ?: "?"))
                   } finally {
-                      try { recorder?.stop() } catch (_: Exception) {}
-                      try { recorder?.release() } catch (_: Exception) {}
+                      try { internalAudioRecord?.stop() } catch (_: Exception) {}
+                      try { internalAudioRecord?.release() } catch (_: Exception) {}
+                      try { micAudioRecord?.stop() } catch (_: Exception) {}
+                      try { micAudioRecord?.release() } catch (_: Exception) {}
+                      try { aec?.release() } catch (_: Exception) {}
                       try { recognizer?.close() } catch (_: Exception) {}
                   }
               }
@@ -1278,9 +1360,14 @@ jobs:
               private fun cleanup() {
                   running.set(false)
                   captureJob?.cancel(); captureJob = null
-                  try { audioRecord?.stop() } catch (_: Exception) {}
-                  try { audioRecord?.release() } catch (_: Exception) {}
-                  audioRecord = null
+                  try { internalAudioRecord?.stop() } catch (_: Exception) {}
+                  try { internalAudioRecord?.release() } catch (_: Exception) {}
+                  internalAudioRecord = null
+                  try { micAudioRecord?.stop() } catch (_: Exception) {}
+                  try { micAudioRecord?.release() } catch (_: Exception) {}
+                  micAudioRecord = null
+                  try { aec?.release() } catch (_: Exception) {}
+                  aec = null
                   try { projection?.stop() } catch (_: Exception) {}
                   projection = null
                   try { translator?.close() } catch (_: Exception) {}
