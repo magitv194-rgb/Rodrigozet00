@@ -79,7 +79,7 @@ jobs:
                   minSdk = 29
                   targetSdk = 34
                   versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-                  versionName = System.getenv("VERSION_NAME") ?: "3.0.2"
+                  versionName = System.getenv("VERSION_NAME") ?: "3.1.0"
                   resourceConfigurations += listOf("es", "en")
               }
 
@@ -134,7 +134,8 @@ jobs:
               <string name="msg_listening_plus">Escuchando audio…</string>
               <string name="msg_translation_error">Error de traducción</string>
               <string name="msg_capture_error">Error de captura</string>
-              <string name="msg_capture_retry">Reintentando captura de audio interno…</string>
+              <string name="msg_capture_retry">Reintentando captura de audio…</string>
+              <string name="msg_oom_error">Memoria insuficiente para el modelo grande. Usando modelo pequeño.</string>
               <string name="msg_overlay_fail">No se pudo mostrar la ventana: %1$s</string>
               <string name="msg_overlay_perm">Falta el permiso de superposición</string>
               <string name="msg_srt_saved">Subtítulos guardados en %1$s</string>
@@ -290,7 +291,6 @@ jobs:
                   get() = prefs.getString("deepl_api_key", "") ?: ""
                   set(v) = prefs.edit().putString("deepl_api_key", v).apply()
 
-              // Nuevo modo de audio: "all", "media", "games", "mic", "mic_internal"
               var audioFilter: String
                   get() = prefs.getString("audio_filter", "all") ?: "all"
                   set(v) = prefs.edit().putString("audio_filter", v).apply()
@@ -616,14 +616,14 @@ jobs:
 
                   section("Reconocimiento de voz")
                   root.addView(switchRow(
-                      "Modelo grande (mucho más preciso, descarga ~1.5 GB)",
+                      "Modelo grande (mucho más preciso, requiere mucha RAM)",
                       settings.useLargeModel
                   ) { settings.useLargeModel = it })
 
                   section("Traducción")
                   val trGroup = RadioGroup(this)
                   val mlkitRadio = RadioButton(this).apply { text = "ML Kit (offline, gratis, ilimitado)"; id = 1 }
-                  val deeplRadio = RadioButton(this).apply { text = "DeepL (online, mejor calidad, 500k chars/mes gratis)"; id = 2 }
+                  val deeplRadio = RadioButton(this).apply { text = "DeepL (online, mejor calidad)"; id = 2 }
                   trGroup.addView(mlkitRadio); trGroup.addView(deeplRadio)
                   if (settings.translatorMode == "deepl") deeplRadio.isChecked = true else mlkitRadio.isChecked = true
                   trGroup.setOnCheckedChangeListener { _, id ->
@@ -652,10 +652,10 @@ jobs:
 
                   section("Fuente de audio")
                   val audioGroup = RadioGroup(this)
-                  val internalRadio = RadioButton(this).apply { text = "Solo audio interno (multimedia)"; id = 1 }
-                  val micRadio = RadioButton(this).apply { text = "Solo micrófono (voz en vivo)"; id = 2 }
-                  val bothRadio = RadioButton(this).apply { text = "Micrófono + Audio interno (Mezcla)"; id = 3 }
-                  val allRadio = RadioButton(this).apply { text = "Todo (Multimedia + Juegos + Notificaciones)"; id = 4 }
+                  val internalRadio = RadioButton(this).apply { text = "Solo audio interno"; id = 1 }
+                  val micRadio = RadioButton(this).apply { text = "Solo micrófono"; id = 2 }
+                  val bothRadio = RadioButton(this).apply { text = "Micrófono + Audio interno"; id = 3 }
+                  val allRadio = RadioButton(this).apply { text = "Todo (Multimedia + Juegos)"; id = 4 }
                   
                   audioGroup.addView(internalRadio); audioGroup.addView(micRadio)
                   audioGroup.addView(bothRadio); audioGroup.addView(allRadio)
@@ -816,6 +816,7 @@ jobs:
           import android.graphics.PixelFormat
           import android.media.AudioAttributes
           import android.media.AudioFormat
+          import android.media.AudioManager
           import android.media.AudioRecord
           import android.media.MediaRecorder
           import android.media.audiofx.AcousticEchoCanceler
@@ -890,6 +891,11 @@ jobs:
               private var lastOriginal = ""
               private var lastTranslated: String? = null
 
+              // Variables para controlar la nueva lógica de frases
+              private var lastPartialText = ""
+              private var lastPartialTime = 0L
+              private var partialJob: Job? = null
+
               override fun onBind(intent: Intent?): IBinder? = null
 
               override fun onInit(status: Int) {
@@ -922,6 +928,7 @@ jobs:
                   lastOriginal = ""
                   lastTranslated = null
                   lastRecognized = ""
+                  lastPartialText = ""
                   modelReady = false
                   subtitleLog.clear()
 
@@ -1018,7 +1025,6 @@ jobs:
                       val useInternal = mode != "mic"
                       val useMic = mode == "mic" || mode == "mic_internal"
 
-                      // Reintento automático para el error de política de audio
                       if (useInternal) {
                           try {
                               internalAudioRecord = createInternalRecord()
@@ -1057,7 +1063,7 @@ jobs:
                                   for (i in 0 until bytesRead step 2) {
                                       val s1 = ((internalBuffer[i].toInt() and 0xFF) or (internalBuffer[i + 1].toInt() shl 8)).toShort()
                                       val s2 = ((micBuffer[i].toInt() and 0xFF) or (micBuffer[i + 1].toInt() shl 8)).toShort()
-                                      val mixed = ((s1 + s2) / 2).toShort() // Mezcla simple promediada
+                                      val mixed = ((s1 + s2) / 2).toShort()
                                       mixedBuffer[i] = (mixed.toInt() and 0xFF).toByte()
                                       mixedBuffer[i + 1] = ((mixed.toInt() shr 8) and 0xFF).toByte()
                                   }
@@ -1088,9 +1094,26 @@ jobs:
                           val json = JSONObject(if (isFinal) recognizer.result else recognizer.partialResult)
                           val key = if (isFinal) "text" else "partial"
                           val recognized = json.optString(key).trim()
-                          if (recognized.isNotBlank() && (isFinal || recognized != lastRecognized)) {
-                              lastRecognized = if (isFinal) "" else recognized
-                              processText(recognized, isFinal, source)
+                          
+                          if (recognized.isNotBlank() && recognized != lastRecognized) {
+                              lastRecognized = recognized
+                              if (isFinal) {
+                                  // Es una frase completa: traducir y hablar YA
+                                  partialJob?.cancel()
+                                  processText(recognized, true, source)
+                              } else {
+                                  // Es un parcial: mostrar rápido y programar traducción si se estanca
+                                  showSubtitleThrottled(recognized, false)
+                                  
+                                  // Lógica para traducir el parcial si el usuario hace una pausa larga (ej. 1 seg)
+                                  partialJob?.cancel()
+                                  partialJob = scope.launch {
+                                      kotlinx.coroutines.delay(800)
+                                      if (running.get()) {
+                                          processText(recognized, false, source)
+                                      }
+                                  }
+                              }
                           }
                       }
                   } catch (e: Exception) {
@@ -1174,10 +1197,19 @@ jobs:
 
               private fun speak(text: String) {
                   if (!settings.voiceEnabled || !ttsReady || text.isBlank()) return
+                  
+                  // Forzar el volumen del stream de música al máximo para que se escuche bien
+                  val audioManager = getSystemService(AudioManager::class.java)
+                  val maxVol = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                  audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVol, 0)
+
                   val params = android.os.Bundle().apply {
                       putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, settings.ttsVolume / 100f)
+                      putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
                   }
-                  tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, "sub-${System.currentTimeMillis()}")
+                  
+                  // QUEUE_ADD en vez de QUEUE_FLUSH para que no corte la palabra a la mitad
+                  tts?.speak(text, TextToSpeech.QUEUE_ADD, params, "sub-${System.currentTimeMillis()}")
               }
 
               private fun startForegroundNotification() {
@@ -1309,8 +1341,21 @@ jobs:
                   val dir = File(filesDir, "vosk-${source.code}${if (settings.useLargeModel) "-large" else ""}")
                   val modelName = if (settings.useLargeModel) source.largeModel else source.smallModel
                   if (!File(dir, "am").isDirectory) downloadModel(dir, modelName)
-                  return try { Model(dir.absolutePath) } catch (_: Exception) {
-                      dir.deleteRecursively(); downloadModel(dir, modelName); Model(dir.absolutePath)
+                  
+                  return try {
+                      Model(dir.absolutePath)
+                  } catch (e: Exception) {
+                      if (settings.useLargeModel) {
+                          mainHandler.post { showToast(getString(R.string.msg_oom_error)) }
+                          settings.useLargeModel = false // Fallback al modelo pequeño
+                          val smallDir = File(filesDir, "vosk-${source.code}")
+                          if (!File(smallDir, "am").isDirectory) downloadModel(smallDir, source.smallModel)
+                          try { Model(smallDir.absolutePath) } catch (_: Exception) {
+                              smallDir.deleteRecursively(); downloadModel(smallDir, source.smallModel); Model(smallDir.absolutePath)
+                          }
+                      } else {
+                          dir.deleteRecursively(); downloadModel(dir, modelName); Model(dir.absolutePath)
+                      }
                   }
               }
 
@@ -1360,6 +1405,7 @@ jobs:
               private fun cleanup() {
                   running.set(false)
                   captureJob?.cancel(); captureJob = null
+                  partialJob?.cancel(); partialJob = null
                   try { internalAudioRecord?.stop() } catch (_: Exception) {}
                   try { internalAudioRecord?.release() } catch (_: Exception) {}
                   internalAudioRecord = null
@@ -1404,7 +1450,7 @@ jobs:
       - name: Compilar APK (release con R8)
         env:
           VERSION_CODE: ${{ github.run_number }}
-          VERSION_NAME: "3.0.${{ github.run_number }}"
+          VERSION_NAME: "3.1.${{ github.run_number }}"
         run: gradle assembleRelease --stacktrace
 
       - name: Publicar APK
