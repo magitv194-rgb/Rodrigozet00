@@ -79,7 +79,7 @@ jobs:
                   minSdk = 29
                   targetSdk = 34
                   versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-                  versionName = System.getenv("VERSION_NAME") ?: "3.3.0"
+                  versionName = System.getenv("VERSION_NAME") ?: "3.4.0"
                   resourceConfigurations += listOf("es", "en")
               }
 
@@ -129,7 +129,8 @@ jobs:
               <string name="btn_stop">Detener</string>
               <string name="btn_settings">Ajustes</string>
               <string name="msg_preparing">Preparando subtítulos…</string>
-              <string name="msg_downloading_model">Descargando modelo de voz…</string>
+              <string name="msg_downloading_model">Descargando modelo (%1$d%%)…</string>
+              <string name="msg_extracting_model">Extrayendo modelo de voz…</string>
               <string name="msg_downloading_translation">Descargando idioma de traducción… (%1$d%%)</string>
               <string name="msg_translation_ready">✅ Idioma descargado y verificado. Escuchando…</string>
               <string name="msg_translation_failed">Error al descargar idioma. Revisa tu internet.</string>
@@ -138,7 +139,8 @@ jobs:
               <string name="msg_translation_error">Error de traducción</string>
               <string name="msg_capture_error">Error de captura</string>
               <string name="msg_capture_retry">Reintentando captura de audio…</string>
-              <string name="msg_oom_error">Memoria insuficiente para el modelo de voz.</string>
+              <string name="msg_oom_error">Memoria insuficiente para el modelo de voz. Intenta cerrar otras apps.</string>
+              <string name="msg_model_error">Error al cargar el modelo de voz. Revisa tu conexión a internet.</string>
               <string name="msg_overlay_fail">No se pudo mostrar la ventana: %1$s</string>
               <string name="msg_overlay_perm">Falta el permiso de superposición</string>
               <string name="msg_srt_saved">Subtítulos guardados en %1$s</string>
@@ -202,6 +204,7 @@ jobs:
 
               <application
                   android:allowBackup="false"
+                  android:largeHeap="true"
                   android:icon="@mipmap/ic_launcher"
                   android:label="@string/app_name"
                   android:theme="@style/Theme.SubtitulosLive"
@@ -830,12 +833,15 @@ jobs:
           import kotlinx.coroutines.cancel
           import kotlinx.coroutines.isActive
           import kotlinx.coroutines.launch
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
           import org.json.JSONObject
           import org.vosk.Model
           import org.vosk.Recognizer
           import java.io.File
-          import java.net.URL
+          import java.io.IOException
           import java.util.Locale
+          import java.util.concurrent.TimeUnit
           import java.util.concurrent.atomic.AtomicBoolean
           import java.util.zip.ZipInputStream
           import kotlin.math.abs
@@ -1121,8 +1127,14 @@ jobs:
                               }
                           }
                       }
-                  } catch (e: Exception) {
-                      if (running.get()) showSubtitle(getString(R.string.msg_capture_error) + ": " + (e.localizedMessage ?: "?"))
+                  } catch (e: Throwable) {
+                      if (running.get()) {
+                          if (e is OutOfMemoryError) {
+                              showSubtitle(getString(R.string.msg_oom_error))
+                          } else {
+                              showSubtitle(getString(R.string.msg_capture_error) + ": " + (e.localizedMessage ?: "?"))
+                          }
+                      }
                   } finally {
                       try { internalAudioRecord?.stop() } catch (_: Exception) {}
                       try { internalAudioRecord?.release() } catch (_: Exception) {}
@@ -1358,25 +1370,75 @@ jobs:
               }
 
               private fun downloadModel(destination: File, modelName: String) {
-                  showSubtitle(getString(R.string.msg_downloading_model))
+                  val url = "https://alphacephei.com/vosk/models/$modelName.zip"
+                  val zipFile = File(cacheDir, "${destination.name}.zip")
+                  
+                  showSubtitle("Iniciando descarga de modelo...")
+                  
+                  val client = OkHttpClient.Builder()
+                      .connectTimeout(60, TimeUnit.SECONDS)
+                      .readTimeout(60, TimeUnit.SECONDS)
+                      .build()
+                      
+                  val request = Request.Builder().url(url).build()
+                  
+                  try {
+                      client.newCall(request).execute().use { response ->
+                          if (!response.isSuccessful) throw IOException("Error de red: ${response.code}")
+                          val body = response.body ?: throw IOException("Sin respuesta")
+                          val totalBytes = body.contentLength()
+                          val input = body.byteStream()
+                          val output = zipFile.outputStream()
+                          
+                          val data = ByteArray(8192)
+                          var totalRead = 0L
+                          var count: Int
+                          var lastProgress = -1
+                          
+                          while (input.read(data).also { count = it } != -1) {
+                              output.write(data, 0, count)
+                              totalRead += count
+                              if (totalBytes > 0) {
+                                  val progress = ((totalRead * 100) / totalBytes).toInt()
+                                  if (progress != lastProgress && progress % 5 == 0) {
+                                      lastProgress = progress
+                                      showSubtitle(getString(R.string.msg_downloading_model, progress))
+                                  }
+                              }
+                          }
+                          output.flush()
+                          output.close()
+                          input.close()
+                      }
+                  } catch (e: Exception) {
+                      zipFile.delete()
+                      throw e
+                  }
+                  
+                  showSubtitle(getString(R.string.msg_extracting_model))
+                  
                   val tempDir = File(filesDir, "tmp-${destination.name}")
                   tempDir.deleteRecursively(); tempDir.mkdirs()
-                  val zipFile = File(cacheDir, "${destination.name}.zip")
-                  URL("https://alphacephei.com/vosk/models/$modelName.zip").openStream().use { input ->
-                      zipFile.outputStream().use { output -> input.copyTo(output) }
-                  }
-                  ZipInputStream(zipFile.inputStream()).use { zip ->
-                      var entry = zip.nextEntry
-                      while (entry != null) {
-                          val out = File(tempDir, entry.name)
-                          if (!out.canonicalPath.startsWith(tempDir.canonicalPath + File.separator)) {
-                              throw SecurityException("Zip inseguro")
+                  
+                  try {
+                      ZipInputStream(zipFile.inputStream()).use { zip ->
+                          var entry = zip.nextEntry
+                          while (entry != null) {
+                              val out = File(tempDir, entry.name)
+                              if (!out.canonicalPath.startsWith(tempDir.canonicalPath + File.separator)) {
+                                  throw SecurityException("Zip inseguro")
+                              }
+                              if (entry.isDirectory) out.mkdirs()
+                              else { out.parentFile?.mkdirs(); out.outputStream().use { zip.copyTo(it) } }
+                              zip.closeEntry(); entry = zip.nextEntry
                           }
-                          if (entry.isDirectory) out.mkdirs()
-                          else { out.parentFile?.mkdirs(); out.outputStream().use { zip.copyTo(it) } }
-                          zip.closeEntry(); entry = zip.nextEntry
                       }
+                  } catch (e: Exception) {
+                      zipFile.delete()
+                      tempDir.deleteRecursively()
+                      throw e
                   }
+                  
                   zipFile.delete()
                   val root = tempDir.walkTopDown().firstOrNull { File(it, "am").isDirectory }
                       ?: throw IllegalStateException("Modelo incompleto")
@@ -1448,7 +1510,7 @@ jobs:
       - name: Compilar APK (release con R8)
         env:
           VERSION_CODE: ${{ github.run_number }}
-          VERSION_NAME: "3.3.${{ github.run_number }}"
+          VERSION_NAME: "3.4.${{ github.run_number }}"
         run: gradle assembleRelease --stacktrace
 
       - name: Publicar APK
