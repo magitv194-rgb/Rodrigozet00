@@ -79,7 +79,7 @@ jobs:
                   minSdk = 29
                   targetSdk = 34
                   versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
-                  versionName = System.getenv("VERSION_NAME") ?: "3.2.0"
+                  versionName = System.getenv("VERSION_NAME") ?: "3.3.0"
                   resourceConfigurations += listOf("es", "en")
               }
 
@@ -138,7 +138,7 @@ jobs:
               <string name="msg_translation_error">Error de traducción</string>
               <string name="msg_capture_error">Error de captura</string>
               <string name="msg_capture_retry">Reintentando captura de audio…</string>
-              <string name="msg_oom_error">Memoria insuficiente para el modelo grande. Usando modelo pequeño.</string>
+              <string name="msg_oom_error">Memoria insuficiente para el modelo de voz.</string>
               <string name="msg_overlay_fail">No se pudo mostrar la ventana: %1$s</string>
               <string name="msg_overlay_perm">Falta el permiso de superposición</string>
               <string name="msg_srt_saved">Subtítulos guardados en %1$s</string>
@@ -237,31 +237,22 @@ jobs:
 
           data class LanguageOption(
               val code: String,
-              val smallModel: String,
-              val largeModel: String,
+              val model: String,
               val translateCode: String,
               val ttsLocale: Locale
           )
 
           fun deeplSource(code: String): String = when (code) {
-              "zh" -> "ZH"; "pt" -> "PT"; "en" -> "EN"; else -> code.uppercase()
+              "es" -> "ES"; "de" -> "DE"; else -> code.uppercase()
           }
 
           fun deeplTarget(code: String): String = when (code) {
-              "zh" -> "ZH"; "pt" -> "PT-BR"; "en" -> "EN-US"; else -> code.uppercase()
+              "es" -> "ES"; "de" -> "DE"; else -> code.uppercase()
           }
 
           val LANGS = linkedMapOf(
-              "Español" to LanguageOption("es", "vosk-model-small-es-0.42", "vosk-model-es-0.42", TranslateLanguage.SPANISH, Locale("es")),
-              "Inglés" to LanguageOption("en", "vosk-model-small-en-us-0.15", "vosk-model-en-us-0.22", TranslateLanguage.ENGLISH, Locale.US),
-              "Alemán" to LanguageOption("de", "vosk-model-small-de-0.15", "vosk-model-de-0.21", TranslateLanguage.GERMAN, Locale.GERMANY),
-              "Coreano" to LanguageOption("ko", "vosk-model-small-ko-0.22", "vosk-model-ko-0.22", TranslateLanguage.KOREAN, Locale.KOREA),
-              "Portugués" to LanguageOption("pt", "vosk-model-small-pt-0.3", "vosk-model-pt-fb-v0.1.1-20220516_2113", TranslateLanguage.PORTUGUESE, Locale("pt", "BR")),
-              "Francés" to LanguageOption("fr", "vosk-model-small-fr-0.22", "vosk-model-fr-0.22", TranslateLanguage.FRENCH, Locale.FRANCE),
-              "Italiano" to LanguageOption("it", "vosk-model-small-it-0.22", "vosk-model-it-0.22", TranslateLanguage.ITALIAN, Locale.ITALY),
-              "Japonés" to LanguageOption("ja", "vosk-model-small-ja-0.22", "vosk-model-ja-0.22", TranslateLanguage.JAPANESE, Locale.JAPAN),
-              "Ruso" to LanguageOption("ru", "vosk-model-small-ru-0.22", "vosk-model-ru-0.42", TranslateLanguage.RUSSIAN, Locale("ru")),
-              "Chino" to LanguageOption("zh", "vosk-model-small-cn-0.22", "vosk-model-cn-0.22", TranslateLanguage.CHINESE, Locale.SIMPLIFIED_CHINESE)
+              "Español" to LanguageOption("es", "vosk-model-es-0.42", TranslateLanguage.SPANISH, Locale("es")),
+              "Alemán" to LanguageOption("de", "vosk-model-de-0.21", TranslateLanguage.GERMAN, Locale.GERMANY)
           )
           __EOF__
 
@@ -275,16 +266,12 @@ jobs:
                   .getSharedPreferences("settings", Context.MODE_PRIVATE)
 
               var sourceLang: String
-                  get() = prefs.getString("source_lang", "Inglés") ?: "Inglés"
+                  get() = prefs.getString("source_lang", "Español") ?: "Español"
                   set(v) = prefs.edit().putString("source_lang", v).apply()
 
               var targetLang: String
                   get() = prefs.getString("target_lang", "Español") ?: "Español"
                   set(v) = prefs.edit().putString("target_lang", v).apply()
-
-              var useLargeModel: Boolean
-                  get() = prefs.getBoolean("use_large_model", false)
-                  set(v) = prefs.edit().putBoolean("use_large_model", v).apply()
 
               var translatorMode: String
                   get() = prefs.getString("translator_mode", "mlkit") ?: "mlkit"
@@ -617,12 +604,6 @@ jobs:
                       setPadding(0, 0, 0, 32)
                   })
 
-                  section("Reconocimiento de voz")
-                  root.addView(switchRow(
-                      "Modelo grande (mucho más preciso, requiere mucha RAM)",
-                      settings.useLargeModel
-                  ) { settings.useLargeModel = it })
-
                   section("Traducción")
                   val trGroup = RadioGroup(this)
                   val mlkitRadio = RadioButton(this).apply { text = "ML Kit (offline, gratis, ilimitado)"; id = 1 }
@@ -731,7 +712,6 @@ jobs:
                   root.addView(MaterialButton(this).apply {
                       text = "Restablecer valores"
                       setOnClickListener {
-                          settings.useLargeModel = false
                           settings.translatorMode = "mlkit"
                           settings.deeplApiKey = ""
                           settings.audioFilter = "all"
@@ -972,7 +952,6 @@ jobs:
                               .setTargetLanguage(target.translateCode).build()
                       )
                       
-                      // Mostrar progreso simulado de descarga
                       scope.launch {
                           var progress = 0
                           val progressJob = launch {
@@ -986,7 +965,6 @@ jobs:
 
                           translator?.downloadModelIfNeeded(DownloadConditions.Builder().build())
                               ?.addOnSuccessListener {
-                                  // Verificación real: intentar traducir algo
                                   translator?.translate("test")
                                       ?.addOnSuccessListener {
                                           progressJob.cancel()
@@ -1137,10 +1115,8 @@ jobs:
                               lastRecognized = recognized
                               if (isFinal) {
                                   partialJob?.cancel()
-                                  // Solo procesar (traducir y hablar) cuando la frase esté completa
                                   processText(recognized, true, source)
                               } else {
-                                  // Mostrar texto parcial instantáneamente para que el usuario vea que "toma las palabras"
                                   showSubtitleThrottled(recognized, false)
                               }
                           }
@@ -1236,7 +1212,6 @@ jobs:
                       putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
                   }
                   
-                  // QUEUE_ADD para que termine de decir la frase sin cortarse
                   tts?.speak(text, TextToSpeech.QUEUE_ADD, params, "sub-${System.currentTimeMillis()}")
               }
 
@@ -1366,24 +1341,19 @@ jobs:
               }
 
               private fun loadModel(source: LanguageOption): Model {
-                  val dir = File(filesDir, "vosk-${source.code}${if (settings.useLargeModel) "-large" else ""}")
-                  val modelName = if (settings.useLargeModel) source.largeModel else source.smallModel
-                  if (!File(dir, "am").isDirectory) downloadModel(dir, modelName)
+                  val dir = File(filesDir, "vosk-${source.code}")
+                  if (!File(dir, "am").isDirectory) downloadModel(dir, source.model)
                   
                   return try {
                       Model(dir.absolutePath)
-                  } catch (e: Exception) {
-                      if (settings.useLargeModel) {
+                  } catch (e: Throwable) {
+                      if (e is OutOfMemoryError) {
                           mainHandler.post { showToast(getString(R.string.msg_oom_error)) }
-                          settings.useLargeModel = false
-                          val smallDir = File(filesDir, "vosk-${source.code}")
-                          if (!File(smallDir, "am").isDirectory) downloadModel(smallDir, source.smallModel)
-                          try { Model(smallDir.absolutePath) } catch (_: Exception) {
-                              smallDir.deleteRecursively(); downloadModel(smallDir, source.smallModel); Model(smallDir.absolutePath)
-                          }
-                      } else {
-                          dir.deleteRecursively(); downloadModel(dir, modelName); Model(dir.absolutePath)
+                          throw e
                       }
+                      dir.deleteRecursively()
+                      downloadModel(dir, source.model)
+                      Model(dir.absolutePath)
                   }
               }
 
@@ -1478,7 +1448,7 @@ jobs:
       - name: Compilar APK (release con R8)
         env:
           VERSION_CODE: ${{ github.run_number }}
-          VERSION_NAME: "3.2.${{ github.run_number }}"
+          VERSION_NAME: "3.3.${{ github.run_number }}"
         run: gradle assembleRelease --stacktrace
 
       - name: Publicar APK
